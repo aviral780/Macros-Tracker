@@ -10,6 +10,7 @@ import { DEFAULT_PLAN, type CardioEntry, type TrainingPlan, type Workout } from 
 import { CardioBlock } from "./CardioBlock";
 import { DateNav } from "./DateNav";
 import { Icon } from "./Icon";
+import { RoutineEditor } from "./RoutineEditor";
 import { useToast } from "./Toast";
 import { WorkoutEditor } from "./WorkoutEditor";
 
@@ -39,7 +40,7 @@ export function TrainView() {
   const plan = onDay?.plan ?? DEFAULT_PLAN;
   const nextDay = onDay?.nextDay ?? plan.days[0];
 
-  const start = async (body: { name: string; copyFrom?: number }) => {
+  const start = async (body: { name: string; copyFrom?: number; routineDay?: string }) => {
     setBusy(true);
     try {
       await api("/api/workouts", { method: "POST", body: { date, ...body } });
@@ -52,9 +53,6 @@ export function TrainView() {
       setBusy(false);
     }
   };
-
-  const templateFor = (name: string) =>
-    hist.data?.templates.find((t) => t.name.toLowerCase() === name.toLowerCase())?.id;
 
   const replace = (w: Workout) =>
     day.setData((d) => (d ? { ...d, workouts: d.workouts.map((x) => (x.id === w.id ? w : x)) } : d));
@@ -107,7 +105,7 @@ export function TrainView() {
                         type="button"
                         className={`btn btn-sm ${isNext ? "btn-primary" : "btn-quiet"}`}
                         disabled={busy}
-                        onClick={() => start({ name: d, copyFrom: templateFor(d) })}
+                        onClick={() => start({ name: d, routineDay: d })}
                       >
                         {isNext && <Icon name="spark" size={14} />}
                         {d}
@@ -116,7 +114,7 @@ export function TrainView() {
                   })}
                 </div>
                 <p className="mt-2 text-[13px] text-muted">
-                  Starts the day and pulls in the exercises you did last time you trained it.
+                  Starts the day with the exercises saved for it below.
                 </p>
               </div>
 
@@ -167,8 +165,10 @@ export function TrainView() {
           )}
         </div>
 
-        <aside className="panel overflow-hidden">
-          <h2 className="border-b border-line px-4 py-3 text-[15px] font-bold">Recent sessions</h2>
+        <aside className="grid gap-6">
+          <RoutineEditor plan={plan} nextDay={nextDay} />
+          <section className="panel overflow-hidden">
+            <h2 className="border-b border-line px-4 py-3 text-[15px] font-bold">Recent sessions</h2>
           {hist.data?.history.length ? (
             <ul>
               {hist.data.history.slice(0, 12).map((h) => (
@@ -191,6 +191,7 @@ export function TrainView() {
           ) : (
             <p className="px-4 py-3 text-[14px] text-muted">Sessions you log show up here.</p>
           )}
+          </section>
         </aside>
       </div>
     </div>

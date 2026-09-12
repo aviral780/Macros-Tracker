@@ -215,3 +215,19 @@ export function getTrends(from: string, to: string) {
     .all(from, to) as { date: string; minutes: number; sessions: number }[];
   return { days, weights, training, cardio };
 }
+
+export type RoutineExercise = { id: number; exercise_id: number; name: string; muscle: string };
+
+export function getRoutine(day: string): RoutineExercise[] {
+  return db
+    .prepare(
+      `SELECT r.id, r.exercise_id, e.name, e.muscle FROM routine_exercises r
+       JOIN exercises e ON e.id = r.exercise_id
+       WHERE r.day = ? COLLATE NOCASE ORDER BY r.position, r.id`,
+    )
+    .all(day) as RoutineExercise[];
+}
+
+export function getRoutines(plan: TrainingPlan) {
+  return plan.days.map((day) => ({ day, exercises: getRoutine(day) }));
+}

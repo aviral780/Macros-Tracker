@@ -13,6 +13,7 @@ import { DaySummary } from "./DaySummary";
 import { FoodEditSheet } from "./FoodEditSheet";
 import { Icon } from "./Icon";
 import { MacroLine } from "./MacroLine";
+import { MomentumCard } from "./MomentumCard";
 
 type Day = {
   date: string;
@@ -88,6 +89,7 @@ export function TodayView() {
         </div>
 
         <div className="grid gap-4">
+          <MomentumCard />
           {MEALS.map((meal) => {
             const items = entries.filter((e) => e.meal === meal);
             const t = sumMacros(items);

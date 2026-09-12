@@ -20,6 +20,8 @@ const Body = z.object({
   date: ISODate,
   name: z.string().trim().min(1).max(60).default("Workout"),
   copyFrom: z.number().int().optional(),
+  /** Seed the session from a split day's saved exercise list. */
+  routineDay: z.string().trim().max(60).optional(),
 });
 
 export const POST = handle(async (req: Request) => {
@@ -33,6 +35,11 @@ export const POST = handle(async (req: Request) => {
         `INSERT INTO workout_exercises (workout_id, exercise_id, position)
          SELECT ?, exercise_id, position FROM workout_exercises WHERE workout_id = ? ORDER BY position, id`,
       ).run(wid, body.copyFrom);
+    } else if (body.routineDay) {
+      db.prepare(
+        `INSERT INTO workout_exercises (workout_id, exercise_id, position)
+         SELECT ?, exercise_id, position FROM routine_exercises WHERE day = ? COLLATE NOCASE ORDER BY position, id`,
+      ).run(wid, body.routineDay);
     }
     return wid;
   })();

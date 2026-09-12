@@ -92,6 +92,15 @@ CREATE TABLE IF NOT EXISTS cardio (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_cardio_date ON cardio(date);
+
+CREATE TABLE IF NOT EXISTS routine_exercises (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  day TEXT NOT NULL,
+  exercise_id INTEGER NOT NULL REFERENCES exercises(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (day, exercise_id)
+);
+CREATE INDEX IF NOT EXISTS idx_routine_day ON routine_exercises(day);
 `;
 
 /** Columns added after the first release; existing databases get them on open. */
@@ -156,7 +165,82 @@ const SEED_EXERCISES: [string, string][] = [
   ["Hanging leg raise", "Core"],
   ["Cable crunch", "Core"],
   ["Plank", "Core"],
+  ["Pec deck", "Chest"],
+  ["Cable crossover", "Chest"],
+  ["Decline barbell bench press", "Chest"],
+  ["Straight-arm pulldown", "Back"],
+  ["Chest-supported row", "Back"],
+  ["Machine shoulder press", "Shoulders"],
+  ["Cable lateral raise", "Shoulders"],
+  ["Barbell shrug", "Shoulders"],
+  ["Upright row", "Shoulders"],
+  ["Concentration curl", "Arms"],
+  ["Cable curl", "Arms"],
+  ["Rope triceps pushdown", "Arms"],
+  ["Wrist curl", "Arms"],
+  ["Reverse wrist curl", "Arms"],
+  ["Reverse curl", "Arms"],
+  ["Farmer's carry", "Arms"],
+  ["Hack squat", "Legs"],
+  ["Goblet squat", "Legs"],
 ];
+
+/** Starting point for each split day, in the order the exercises are normally done. */
+const SEED_ROUTINE: Record<string, string[]> = {
+  "Chest & Triceps": [
+    "Barbell bench press",
+    "Incline dumbbell press",
+    "Machine chest press",
+    "Cable fly",
+    "Triceps pushdown",
+    "Overhead triceps extension",
+    "Dips",
+  ],
+  "Back & Biceps": [
+    "Lat pulldown",
+    "Barbell row",
+    "Seated cable row",
+    "Dumbbell row",
+    "Barbell curl",
+    "Hammer curl",
+    "Preacher curl",
+  ],
+  "Legs & Shoulders": [
+    "Back squat",
+    "Leg press",
+    "Romanian deadlift",
+    "Leg extension",
+    "Lying leg curl",
+    "Overhead press",
+    "Lateral raise",
+  ],
+  Arms: [
+    "Barbell curl",
+    "Preacher curl",
+    "Hammer curl",
+    "Triceps pushdown",
+    "Skull crusher",
+    "Overhead triceps extension",
+    "Wrist curl",
+    "Reverse wrist curl",
+  ],
+  "Back & Chest": [
+    "Pull-up",
+    "Lat pulldown",
+    "Seated cable row",
+    "Barbell bench press",
+    "Incline dumbbell press",
+    "Cable fly",
+  ],
+  Shoulders: [
+    "Overhead press",
+    "Seated dumbbell press",
+    "Lateral raise",
+    "Rear delt fly",
+    "Face pull",
+    "Barbell shrug",
+  ],
+};
 
 function open() {
   fs.mkdirSync(PHOTO_DIR, { recursive: true });
@@ -166,12 +250,29 @@ function open() {
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
   migrate(db);
-  const count = db.prepare("SELECT COUNT(*) AS n FROM exercises").get() as { n: number };
-  if (count.n === 0) {
-    const insert = db.prepare("INSERT INTO exercises (name, muscle) VALUES (?, ?)");
-    db.transaction(() => SEED_EXERCISES.forEach(([n, m]) => insert.run(n, m)))();
-  }
+  seed(db);
   return db;
+}
+
+function seed(database: Database.Database) {
+  // Idempotent, so exercises added in a later release land in databases that already exist.
+  const insertExercise = database.prepare("INSERT OR IGNORE INTO exercises (name, muscle) VALUES (?, ?)");
+  database.transaction(() => SEED_EXERCISES.forEach(([n, m]) => insertExercise.run(n, m)))();
+
+  const routineCount = database.prepare("SELECT COUNT(*) AS n FROM routine_exercises").get() as { n: number };
+  if (routineCount.n > 0) return;
+  const findExercise = database.prepare("SELECT id FROM exercises WHERE name = ? COLLATE NOCASE");
+  const insertRoutine = database.prepare(
+    "INSERT OR IGNORE INTO routine_exercises (day, exercise_id, position) VALUES (?, ?, ?)",
+  );
+  database.transaction(() => {
+    for (const [day, names] of Object.entries(SEED_ROUTINE)) {
+      names.forEach((name, i) => {
+        const row = findExercise.get(name) as { id: number } | undefined;
+        if (row) insertRoutine.run(day, row.id, i);
+      });
+    }
+  })();
 }
 
 // One connection, opened on first use (not at import, so builds don't touch the file)

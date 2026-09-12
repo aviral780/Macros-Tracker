@@ -93,12 +93,20 @@ function headers(cfg: AIConfig) {
 }
 
 export class AIError extends Error {
-  constructor(message: string, public status = 502) {
+  constructor(message: string, public status = 502, public retryable = false) {
     super(message);
   }
 }
 
-async function describeFailure(res: Response, cfg: AIConfig, body?: string) {
+/** Statuses that mean "the provider is busy", not "your request is wrong". */
+const OVERLOADED = new Set([408, 425, 500, 502, 503, 504, 529]);
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Jittered so several retries in a row don't line up with the same busy window. */
+const backoffMs = (attempt: number) => Math.round(700 * 2 ** attempt * (0.75 + Math.random() * 0.5));
+
+async function describeFailure(res: Response, cfg: AIConfig, model: string, body?: string) {
   const text = body ?? (await res.text().catch(() => ""));
   let detail = text.slice(0, 300);
   try {
@@ -110,10 +118,12 @@ async function describeFailure(res: Response, cfg: AIConfig, body?: string) {
   // Gemini reports a bad key as 400 INVALID_ARGUMENT rather than 401.
   if (res.status === 401 || res.status === 403 || /api[ _-]?key/i.test(detail))
     return new AIError(`${who} rejected the API key. Check it in Settings.`, 401);
-  if (res.status === 429)
-    return new AIError(`${who} rate limit reached. Wait a minute and try again, or switch provider in Settings.`, 429);
   if (res.status === 404)
-    return new AIError(`${who} doesn't have the model "${cfg.model}". Open Settings and choose Detect models.`, 404);
+    return new AIError(`${who} doesn't have the model "${model}". Open Settings and choose Detect models.`, 404);
+  if (res.status === 429)
+    return new AIError(`${who} hit a rate limit on your key.`, 429, true);
+  if (OVERLOADED.has(res.status) || /overload|is busy|unavailable|capacity|try again/i.test(detail))
+    return new AIError(`${who} is overloaded right now.`, 503, true);
   return new AIError(`${who} returned an error (${res.status}): ${detail}`);
 }
 
@@ -125,7 +135,7 @@ export async function listModels(cfg: AIConfig): Promise<string[]> {
   } catch {
     throw unreachable(cfg);
   }
-  if (!res.ok) throw await describeFailure(res, cfg);
+  if (!res.ok) throw await describeFailure(res, cfg, cfg.model || "models");
   const json = (await res.json()) as { data?: { id: string }[] };
   const ids = (json.data ?? []).map((m) => m.id.replace(/^models\//, ""));
   return rankModels(cfg.provider, ids);
@@ -191,30 +201,33 @@ function extractJSON(text: string) {
   return JSON.parse(cleaned.slice(start, end + 1));
 }
 
-export async function analyzeFood(input: { imageDataUrl?: string; text?: string }): Promise<Analysis & { model: string }> {
-  const cfg = getAIConfig();
-  if (PROVIDERS[cfg.provider].needsKey && !cfg.apiKey) {
-    throw new AIError("Add an API key in Settings to analyze food.", 400);
-  }
-  const model = await resolveModel(cfg);
+type AnalysisInput = { imageDataUrl?: string; text?: string };
 
+/** One attempt against one model. Throws AIError; retryable ones are worth another go. */
+async function requestAnalysis(cfg: AIConfig, model: string, input: AnalysisInput): Promise<Analysis> {
   const userText = input.imageDataUrl
     ? `Log the food in this photo.${input.text ? `\nMy note: ${input.text}` : ""}`
     : `Log this meal: ${input.text}`;
   const content: unknown[] = [{ type: "text", text: userText }];
   if (input.imageDataUrl) content.push({ type: "image_url", image_url: { url: input.imageDataUrl } });
 
-  const body: Record<string, unknown> = {
+  const base: Record<string, unknown> = {
     model,
     temperature: 0.2,
-    max_tokens: 8000,
+    // The answer is one small JSON object, so a tight cap cuts latency and quota use.
+    max_tokens: 2048,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content },
     ],
   };
+
+  const extras: Record<string, unknown> = {};
   // JSON mode where the provider supports it; the prompt and parser cover the rest.
-  if (cfg.provider !== "anthropic") body.response_format = { type: "json_object" };
+  if (cfg.provider !== "anthropic") extras.response_format = { type: "json_object" };
+  // Gemini 2.5+ reasons before answering by default, which roughly triples latency on a task
+  // this mechanical and burns free-tier quota that then shows up as "model is overloaded".
+  if (cfg.provider === "gemini" && /2\.5|[3-9]\./.test(model)) extras.reasoning_effort = "none";
 
   const call = (b: Record<string, unknown>) =>
     fetch(endpoint(cfg) + "chat/completions", {
@@ -228,25 +241,24 @@ export async function analyzeFood(input: { imageDataUrl?: string; text?: string 
   let res: Response;
   let errorBody: string | undefined;
   try {
-    res = await call(body);
-    if (res.status === 400 && body.response_format) {
+    res = await call({ ...base, ...extras });
+    if (res.status === 400 && Object.keys(extras).length > 0) {
       errorBody = await res.text();
-      // Some models reject JSON mode; retry without it and rely on the prompt.
-      if (/response_format|json/i.test(errorBody)) {
-        const { response_format: _drop, ...rest } = body;
-        void _drop;
-        res = await call(rest);
+      // Some models reject JSON mode or the thinking switch; retry plain and lean on the parser.
+      if (/response_format|json|reasoning|thinking/i.test(errorBody)) {
+        res = await call(base);
         errorBody = undefined;
       }
     }
   } catch (e) {
-    if (e instanceof Error && e.name === "TimeoutError") throw new AIError("The model took too long to answer. Try again.", 504);
+    if (e instanceof Error && e.name === "TimeoutError")
+      throw new AIError("The model took too long to answer.", 504, true);
     throw unreachable(cfg);
   }
-  if (!res.ok) throw await describeFailure(res, cfg, errorBody);
+  if (!res.ok) throw await describeFailure(res, cfg, model, errorBody);
 
-  const json = (await res.json()) as { choices?: { message?: { content?: string | { text?: string }[] } }[] };
-  const raw = json.choices?.[0]?.message?.content;
+  const payload = (await res.json()) as { choices?: { message?: { content?: string | { text?: string }[] } }[] };
+  const raw = payload.choices?.[0]?.message?.content;
   const text = Array.isArray(raw) ? raw.map((p) => p.text ?? "").join("") : raw ?? "";
   let parsed: unknown;
   try {
@@ -255,5 +267,48 @@ export async function analyzeFood(input: { imageDataUrl?: string; text?: string 
     if (e instanceof AIError) throw e;
     throw new AIError("The model's answer wasn't valid food data. Try again.");
   }
-  return { ...AnalysisSchema.parse(parsed), model };
+  return AnalysisSchema.parse(parsed);
+}
+
+/** Other models on the same key, used only once the chosen one keeps coming back busy. */
+async function fallbackModels(cfg: AIConfig, primary: string) {
+  try {
+    return (await listModels(cfg)).filter((m) => m !== primary).slice(0, 2);
+  } catch {
+    const fb = PROVIDERS[cfg.provider].fallbackModel;
+    return fb && fb !== primary ? [fb] : [];
+  }
+}
+
+export async function analyzeFood(input: AnalysisInput): Promise<Analysis & { model: string }> {
+  const cfg = getAIConfig();
+  if (PROVIDERS[cfg.provider].needsKey && !cfg.apiKey) {
+    throw new AIError("Add an API key in Settings to analyze food.", 400);
+  }
+  const primary = await resolveModel(cfg);
+
+  const attempt = async (model: string, tries: number) => {
+    for (let i = 0; i < tries; i++) {
+      try {
+        return { ...(await requestAnalysis(cfg, model, input)), model };
+      } catch (e) {
+        if (!(e instanceof AIError) || !e.retryable) throw e;
+        if (i < tries - 1) await sleep(backoffMs(i));
+      }
+    }
+    return null;
+  };
+
+  const onPrimary = await attempt(primary, 3);
+  if (onPrimary) return onPrimary;
+
+  for (const model of await fallbackModels(cfg, primary)) {
+    const result = await attempt(model, 1);
+    if (result) return result;
+  }
+
+  throw new AIError(
+    `${PROVIDERS[cfg.provider].label} stayed busy through several retries. Give it a minute, or switch provider in Settings.`,
+    503,
+  );
 }

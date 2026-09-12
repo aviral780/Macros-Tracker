@@ -1,0 +1,171 @@
+import "server-only";
+import { db } from "./db";
+import { addDays, todayISO, weekRange } from "./dates";
+import { getCardioSummary, getPlan, nextSplitDay } from "./queries";
+
+export type Snapshot = {
+  today: string;
+  nextDay: string;
+  trainedToday: boolean;
+  loggedToday: boolean;
+  cardioToday: boolean;
+  daysSinceLast: number | null;
+  streak: number;
+  weekWorkouts: number;
+  weekTarget: number;
+  weekCardio: number;
+  cardioTarget: number;
+};
+
+const dayHasWorkout = (date: string) =>
+  !!db.prepare("SELECT 1 FROM workouts WHERE date = ? LIMIT 1").get(date);
+
+/**
+ * Consecutive training days walking back from today. A single rest day is part of the
+ * pattern on a six-day split, so only two missed days in a row end the run.
+ */
+function trainingStreak(today: string) {
+  let streak = 0;
+  let missed = 0;
+  for (let i = 0; i < 400; i++) {
+    const date = addDays(today, -i);
+    if (dayHasWorkout(date)) {
+      streak++;
+      missed = 0;
+    } else {
+      // Today not being logged yet shouldn't count against a run that is still alive.
+      if (i === 0) continue;
+      missed++;
+      if (missed >= 2) break;
+    }
+  }
+  return streak;
+}
+
+export function snapshot(): Snapshot {
+  const today = todayISO();
+  const plan = getPlan();
+  const week = weekRange(today);
+
+  const lastWorkout = db.prepare("SELECT date FROM workouts ORDER BY date DESC LIMIT 1").get() as
+    | { date: string }
+    | undefined;
+  const weekWorkouts = db
+    .prepare("SELECT COUNT(DISTINCT date) AS n FROM workouts WHERE date BETWEEN ? AND ?")
+    .get(week.from, week.to) as { n: number };
+
+  const daysSinceLast = lastWorkout
+    ? Math.round((Date.parse(today) - Date.parse(lastWorkout.date)) / 86_400_000)
+    : null;
+
+  return {
+    today,
+    nextDay: nextSplitDay(plan),
+    trainedToday: dayHasWorkout(today),
+    loggedToday: !!db.prepare("SELECT 1 FROM food_entries WHERE date = ? LIMIT 1").get(today),
+    cardioToday: !!db.prepare("SELECT 1 FROM cardio WHERE date = ? LIMIT 1").get(today),
+    daysSinceLast,
+    streak: trainingStreak(today),
+    weekWorkouts: weekWorkouts.n,
+    weekTarget: plan.days.length,
+    weekCardio: getCardioSummary(week.from, week.to).days,
+    cardioTarget: plan.cardioPerWeek,
+  };
+}
+
+export type Nudge = {
+  kind: "train" | "cardio" | "log" | "done";
+  urgency: "normal" | "high";
+  title: string;
+  body: string;
+};
+
+/** One message for the moment it is asked for — hour drives whether logging or training leads. */
+export function nudge(s: Snapshot, hour = new Date().getHours()): Nudge {
+  const left = Math.max(0, s.weekTarget - s.weekWorkouts);
+
+  if (!s.trainedToday && s.daysSinceLast !== null && s.daysSinceLast >= 2) {
+    return {
+      kind: "train",
+      urgency: "high",
+      title: `${s.daysSinceLast} days off`,
+      body: `${s.nextDay} is next. Turning up beats the perfect session — go put one on the board.`,
+    };
+  }
+
+  if (!s.trainedToday && hour < 21) {
+    return {
+      kind: "train",
+      urgency: left <= 1 ? "high" : "normal",
+      title: `${s.nextDay} today`,
+      body:
+        left <= 1
+          ? `${s.weekWorkouts} of ${s.weekTarget} done. This is the one that closes the week.`
+          : `${s.weekWorkouts} of ${s.weekTarget} done this week. ${left} to go.`,
+    };
+  }
+
+  if (s.trainedToday && !s.cardioToday && s.weekCardio < s.cardioTarget) {
+    return {
+      kind: "cardio",
+      urgency: "normal",
+      title: "Cardio still open",
+      body: `${s.weekCardio} of ${s.cardioTarget} this week. Twenty minutes on the incline and it's done.`,
+    };
+  }
+
+  if (!s.loggedToday) {
+    return {
+      kind: "log",
+      urgency: hour >= 20 ? "high" : "normal",
+      title: "Nothing logged today",
+      body: "Snap the plate or describe it in a line — takes about ten seconds.",
+    };
+  }
+
+  return {
+    kind: "done",
+    urgency: "normal",
+    title: s.streak > 1 ? `${s.streak} days running` : "Today is done",
+    body:
+      s.weekWorkouts >= s.weekTarget
+        ? "Full week hit, food logged. This is the part most people never get to."
+        : `Trained and logged. ${left} session${left === 1 ? "" : "s"} left this week.`,
+  };
+}
+
+/** Receipts for the days motivation is missing: what has already been earned. */
+export function pepTalk(s: Snapshot) {
+  const totals = db
+    .prepare(
+      `SELECT COUNT(DISTINCT w.id) AS sessions,
+         COALESCE(SUM(s.weight * s.reps) FILTER (WHERE s.warmup = 0), 0) AS volume
+       FROM workouts w
+       LEFT JOIN workout_exercises we ON we.workout_id = w.id
+       LEFT JOIN sets s ON s.workout_exercise_id = we.id`,
+    )
+    .get() as { sessions: number; volume: number };
+
+  const best = db
+    .prepare(
+      `SELECT e.name, s.weight, s.reps, w.date FROM sets s
+       JOIN workout_exercises we ON we.id = s.workout_exercise_id
+       JOIN exercises e ON e.id = we.exercise_id
+       JOIN workouts w ON w.id = we.workout_id
+       WHERE s.warmup = 0 AND s.reps > 0
+       ORDER BY s.weight DESC, s.reps DESC LIMIT 1`,
+    )
+    .get() as { name: string; weight: number; reps: number; date: string } | undefined;
+
+  const lines = [
+    totals.sessions > 0 ? `You have logged ${totals.sessions} sessions. None of them felt convenient either.` : null,
+    totals.volume > 0
+      ? `That is ${Math.round(totals.volume).toLocaleString("en-US")} kg moved. The work is already banked — today just adds to it.`
+      : null,
+    best ? `Your best set on record is ${best.name} at ${best.weight} kg × ${best.reps}. You were not motivated that day either.` : null,
+    s.streak > 1 ? `${s.streak} days in a row right now. Momentum is the hardest thing to buy back once you drop it.` : null,
+    `Lower the bar instead of skipping: show up, do the first exercise, leave if it is still bad. It almost never is.`,
+  ].filter((l): l is string => l !== null);
+
+  return { lines, totals, best: best ?? null };
+}
