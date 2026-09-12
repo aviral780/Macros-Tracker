@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useData } from "@/lib/client";
-import { formatDay, relativeDayLabel } from "@/lib/dates";
+import { formatDay, relativeDayLabel, todayISO } from "@/lib/dates";
 import { fmt, sumMacros } from "@/lib/nutrition";
 import { formatSet, setVolume } from "@/lib/strength";
 import { useDate } from "@/lib/useDate";
@@ -33,6 +33,9 @@ export function TodayView() {
   const entries = data?.date === date ? data.entries : [];
   const totals = sumMacros(entries);
   const fiber = entries.reduce((s, e) => s + e.fiber, 0);
+  // The momentum card and "next up" describe where you are right now, so they only
+  // make sense on today — on a past day they would claim a session is still due.
+  const isToday = date === todayISO();
   const goals = data?.goals ?? { calories: 0, protein: 0, carbs: 0, fat: 0, source: "calculated" as const };
   const q = `date=${date}`;
 
@@ -89,7 +92,7 @@ export function TodayView() {
         </div>
 
         <div className="grid gap-4">
-          <MomentumCard />
+          {isToday && <MomentumCard />}
           {MEALS.map((meal) => {
             const items = entries.filter((e) => e.meal === meal);
             const t = sumMacros(items);
@@ -147,7 +150,7 @@ export function TodayView() {
           <TrainingCard
             workouts={data?.date === date ? data.workouts : []}
             cardio={data?.date === date ? data.cardio : []}
-            nextDay={data?.date === date ? data.nextDay : ""}
+            nextDay={data?.date === date && isToday ? data.nextDay : ""}
             q={q}
           />
         </div>
