@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { handle, json } from "@/lib/http";
-import { getWorkout, getWorkoutHistory } from "@/lib/queries";
+import { getPlan, getWorkout, getWorkoutHistory, nextSplitDay } from "@/lib/queries";
 import { ISODate } from "@/lib/schemas";
 
 export const GET = handle(() => {
@@ -12,7 +12,8 @@ export const GET = handle(() => {
        GROUP BY lower(w.name) ORDER BY MAX(w.date) DESC LIMIT 8`,
     )
     .all() as { name: string; id: number }[];
-  return json({ history: getWorkoutHistory(40), templates });
+  const plan = getPlan();
+  return json({ history: getWorkoutHistory(40), templates, plan, nextDay: nextSplitDay(plan) });
 });
 
 const Body = z.object({

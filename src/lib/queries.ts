@@ -2,10 +2,12 @@ import "server-only";
 import { db, getSetting } from "./db";
 import { DEFAULT_GOALS, DEFAULT_PROFILE } from "./nutrition";
 import { e1rm, setVolume } from "./strength";
-import type { Exercise, FoodEntry, Goals, Profile, Workout, WorkoutExercise } from "./types";
+import { DEFAULT_PLAN } from "./types";
+import type { CardioEntry, Exercise, FoodEntry, Goals, Profile, TrainingPlan, Workout, WorkoutExercise } from "./types";
 
 export const getGoals = () => getSetting<Goals>("goals", DEFAULT_GOALS);
 export const getProfile = () => getSetting<Profile>("profile", DEFAULT_PROFILE);
+export const getPlan = () => getSetting<TrainingPlan>("plan", DEFAULT_PLAN);
 export const hasGoals = () => !!db.prepare("SELECT 1 FROM settings WHERE key = 'goals'").get();
 
 export function getEntries(date: string): FoodEntry[] {
@@ -82,7 +84,7 @@ export function getWorkoutsForDate(date: string): Workout[] {
 export function getWorkoutHistory(limit = 30) {
   const rows = db
     .prepare(
-      `SELECT w.id, w.date, w.name,
+      `SELECT w.id, w.date, w.name, w.duration_min,
          COUNT(DISTINCT we.id) AS exercises,
          COUNT(s.id) FILTER (WHERE s.warmup = 0) AS sets,
          COALESCE(SUM(s.weight * s.reps) FILTER (WHERE s.warmup = 0), 0) AS volume
@@ -91,18 +93,58 @@ export function getWorkoutHistory(limit = 30) {
        LEFT JOIN sets s ON s.workout_exercise_id = we.id
        GROUP BY w.id ORDER BY w.date DESC, w.id DESC LIMIT ?`,
     )
-    .all(limit) as { id: number; date: string; name: string; exercises: number; sets: number; volume: number }[];
+    .all(limit) as {
+    id: number;
+    date: string;
+    name: string;
+    duration_min: number | null;
+    exercises: number;
+    sets: number;
+    volume: number;
+  }[];
   return rows;
 }
 
+const CARDIO_COLUMNS = "id, date, kind, minutes, incline, speed, distance_km, calories, avg_hr, source";
+
+export function getCardio(date: string): CardioEntry[] {
+  return db.prepare(`SELECT ${CARDIO_COLUMNS} FROM cardio WHERE date = ? ORDER BY id`).all(date) as CardioEntry[];
+}
+
+/** Distinct days rather than rows: two treadmill blocks in one day are still one cardio day. */
+export function getCardioSummary(from: string, to: string) {
+  const row = db
+    .prepare(
+      `SELECT COUNT(DISTINCT date) AS days, COALESCE(SUM(minutes), 0) AS minutes
+       FROM cardio WHERE date BETWEEN ? AND ?`,
+    )
+    .get(from, to) as { days: number; minutes: number };
+  return row;
+}
+
+/** The next session in the rotation, based on where the last logged workout sits in it. */
+export function nextSplitDay(plan: TrainingPlan) {
+  if (plan.days.length === 0) return "Workout";
+  const last = db.prepare("SELECT name FROM workouts ORDER BY date DESC, id DESC LIMIT 1").get() as
+    | { name: string }
+    | undefined;
+  if (!last) return plan.days[0];
+  const i = plan.days.findIndex((d) => d.toLowerCase() === last.name.toLowerCase());
+  return i === -1 ? plan.days[0] : plan.days[(i + 1) % plan.days.length];
+}
+
+/** Most-used first, so the picker can offer regulars without any manual curation. */
 export function listExercises(): Exercise[] {
   const rows = db
     .prepare(
-      `SELECT e.id, e.name, e.muscle, e.custom, MAX(w.date) AS last_used
+      `SELECT e.id, e.name, e.muscle, e.custom,
+         COUNT(we.id) AS uses,
+         MAX(w.date) AS last_used
        FROM exercises e
        LEFT JOIN workout_exercises we ON we.exercise_id = e.id
        LEFT JOIN workouts w ON w.id = we.workout_id
-       GROUP BY e.id ORDER BY last_used IS NULL, last_used DESC, e.muscle, e.name`,
+       GROUP BY e.id
+       ORDER BY uses DESC, last_used IS NULL, last_used DESC, e.muscle, e.name`,
     )
     .all() as (Omit<Exercise, "custom"> & { custom: number; last_used: string | null })[];
   return rows.map((r) => ({ ...r, custom: !!r.custom }));
@@ -165,5 +207,11 @@ export function getTrends(from: string, to: string) {
        WHERE w.date BETWEEN ? AND ? GROUP BY w.date ORDER BY w.date`,
     )
     .all(from, to) as { date: string; workouts: number; volume: number; sets: number }[];
-  return { days, weights, training };
+  const cardio = db
+    .prepare(
+      `SELECT date, COALESCE(SUM(minutes), 0) AS minutes, COUNT(*) AS sessions
+       FROM cardio WHERE date BETWEEN ? AND ? GROUP BY date ORDER BY date`,
+    )
+    .all(from, to) as { date: string; minutes: number; sessions: number }[];
+  return { days, weights, training, cardio };
 }

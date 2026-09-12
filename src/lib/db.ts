@@ -76,7 +76,40 @@ CREATE TABLE IF NOT EXISTS body_weight (
   date TEXT PRIMARY KEY,
   kg REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS cardio (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'Incline treadmill',
+  minutes REAL NOT NULL DEFAULT 0,
+  incline REAL,
+  speed REAL,
+  distance_km REAL,
+  calories REAL,
+  avg_hr REAL,
+  source TEXT NOT NULL DEFAULT 'manual',
+  external_id TEXT UNIQUE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cardio_date ON cardio(date);
 `;
+
+/** Columns added after the first release; existing databases get them on open. */
+const ADDED_COLUMNS: [table: string, column: string, ddl: string][] = [
+  ["workouts", "duration_min", "REAL"],
+  ["workouts", "calories", "REAL"],
+  ["workouts", "avg_hr", "REAL"],
+  ["workouts", "external_id", "TEXT"],
+];
+
+function migrate(database: Database.Database) {
+  for (const [table, column, ddl] of ADDED_COLUMNS) {
+    const cols = database.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (!cols.some((c) => c.name === column)) {
+      database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+    }
+  }
+}
 
 const SEED_EXERCISES: [string, string][] = [
   ["Barbell bench press", "Chest"],
@@ -132,6 +165,7 @@ function open() {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
+  migrate(db);
   const count = db.prepare("SELECT COUNT(*) AS n FROM exercises").get() as { n: number };
   if (count.n === 0) {
     const insert = db.prepare("INSERT INTO exercises (name, muscle) VALUES (?, ?)");

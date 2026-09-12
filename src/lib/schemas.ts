@@ -15,3 +15,16 @@ export const FoodInput = z.object({
 });
 
 export const ISODate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use a YYYY-MM-DD date");
+
+const optional = (max: number) => z.coerce.number().min(0).max(max).nullable().default(null);
+
+export const CardioInput = z.object({
+  date: ISODate,
+  kind: z.string().trim().min(1).max(60).default("Incline treadmill"),
+  minutes: z.coerce.number().min(0).max(600),
+  incline: optional(50),
+  speed: optional(60),
+  distance_km: optional(500),
+  calories: optional(10000),
+  avg_hr: optional(250),
+});

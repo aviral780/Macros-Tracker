@@ -7,14 +7,22 @@ import { formatDay, relativeDayLabel } from "@/lib/dates";
 import { fmt, sumMacros } from "@/lib/nutrition";
 import { formatSet, setVolume } from "@/lib/strength";
 import { useDate } from "@/lib/useDate";
-import { MEAL_LABEL, MEALS, type FoodEntry, type Goals, type Workout } from "@/lib/types";
+import { MEAL_LABEL, MEALS, type CardioEntry, type FoodEntry, type Goals, type Workout } from "@/lib/types";
 import { DateNav } from "./DateNav";
+import { DaySummary } from "./DaySummary";
 import { FoodEditSheet } from "./FoodEditSheet";
 import { Icon } from "./Icon";
 import { MacroLine } from "./MacroLine";
-import { NutritionLabel } from "./NutritionLabel";
 
-type Day = { date: string; goals: Goals; goalsSet: boolean; entries: FoodEntry[]; workouts: Workout[] };
+type Day = {
+  date: string;
+  goals: Goals;
+  goalsSet: boolean;
+  entries: FoodEntry[];
+  workouts: Workout[];
+  cardio: CardioEntry[];
+  nextDay: string;
+};
 
 export function TodayView() {
   const [date, setDate] = useDate();
@@ -23,6 +31,7 @@ export function TodayView() {
 
   const entries = data?.date === date ? data.entries : [];
   const totals = sumMacros(entries);
+  const fiber = entries.reduce((s, e) => s + e.fiber, 0);
   const goals = data?.goals ?? { calories: 0, protein: 0, carbs: 0, fat: 0, source: "calculated" as const };
   const q = `date=${date}`;
 
@@ -51,7 +60,7 @@ export function TodayView() {
           <Icon name="target" className="shrink-0" />
           <span>
             <span className="font-semibold">Set your targets.</span>{" "}
-            <span className="text-ink-2">The label is using a 2,400 kcal placeholder until you do.</span>
+            <span className="text-ink-2">Using a 2,400 kcal placeholder until you do.</span>
           </span>
           <Icon name="right" size={18} className="ml-auto shrink-0 text-muted" />
         </Link>
@@ -59,7 +68,13 @@ export function TodayView() {
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,400px)_minmax(0,1fr)] lg:items-start">
         <div className="lg:sticky lg:top-8">
-          <NutritionLabel totals={totals} goals={goals} dayLabel={formatDay(date, { weekday: "long", day: "numeric", month: "short" })} loading={loading && !!data} />
+          <DaySummary
+            totals={totals}
+            goals={goals}
+            fiber={fiber}
+            dayLabel={formatDay(date, { weekday: "long", day: "numeric", month: "short" })}
+            loading={loading && !!data}
+          />
           <div className="mt-4 grid grid-cols-2 gap-2">
             <Link href={`/log?${q}`} className="btn btn-primary">
               <Icon name="camera" size={18} />
@@ -127,7 +142,12 @@ export function TodayView() {
             );
           })}
 
-          <TrainingCard workouts={data?.date === date ? data.workouts : []} q={q} />
+          <TrainingCard
+            workouts={data?.date === date ? data.workouts : []}
+            cardio={data?.date === date ? data.cardio : []}
+            nextDay={data?.date === date ? data.nextDay : ""}
+            q={q}
+          />
         </div>
       </div>
 
@@ -136,21 +156,46 @@ export function TodayView() {
   );
 }
 
-function TrainingCard({ workouts, q }: { workouts: Workout[]; q: string }) {
+function CardioLine({ cardio }: { cardio: CardioEntry[] }) {
+  if (cardio.length === 0) return null;
+  const minutes = cardio.reduce((s, c) => s + c.minutes, 0);
+  return (
+    <div className="flex items-center gap-2 border-t border-line px-4 py-2.5 text-[14px]">
+      <Icon name="clock" size={16} className="text-train" />
+      <span className="font-medium">{fmt(minutes)} min cardio</span>
+      <span className="ml-auto truncate text-[13px] text-muted">{cardio.map((c) => c.kind).join(", ")}</span>
+    </div>
+  );
+}
+
+function TrainingCard({
+  workouts,
+  cardio,
+  nextDay,
+  q,
+}: {
+  workouts: Workout[];
+  cardio: CardioEntry[];
+  nextDay: string;
+  q: string;
+}) {
   const w = workouts[0];
   if (!w) {
     return (
-      <section className="panel flex items-center gap-4 p-4">
-        <span className="grid h-11 w-11 place-items-center rounded-lg bg-panel-2 text-train">
-          <Icon name="dumbbell" />
-        </span>
-        <div>
-          <h2 className="semi-condensed text-[19px] font-bold leading-tight">Training</h2>
-          <p className="text-[14px] text-muted">No workout logged.</p>
+      <section className="panel overflow-hidden">
+        <div className="flex items-center gap-4 p-4">
+          <span className="grid h-11 w-11 place-items-center rounded-lg bg-panel-2 text-train">
+            <Icon name="dumbbell" />
+          </span>
+          <div className="min-w-0">
+            <h2 className="semi-condensed text-[19px] font-bold leading-tight">Training</h2>
+            <p className="truncate text-[14px] text-muted">{nextDay ? `Next up · ${nextDay}` : "No workout logged."}</p>
+          </div>
+          <Link href={`/train?${q}`} className="btn btn-ghost btn-sm ml-auto shrink-0">
+            Start workout
+          </Link>
         </div>
-        <Link href={`/train?${q}`} className="btn btn-ghost btn-sm ml-auto">
-          Start workout
-        </Link>
+        <CardioLine cardio={cardio} />
       </section>
     );
   }
@@ -162,9 +207,9 @@ function TrainingCard({ workouts, q }: { workouts: Workout[]; q: string }) {
         <span className="grid h-11 w-11 place-items-center rounded-lg text-panel" style={{ background: "var(--train)" }}>
           <Icon name="dumbbell" />
         </span>
-        <div>
-          <p className="eyebrow">Training</p>
-          <h2 className="semi-condensed text-[19px] font-bold leading-tight">{w.name}</h2>
+        <div className="min-w-0">
+          <p className="eyebrow">Training{w.duration_min ? ` · ${fmt(w.duration_min)} min` : ""}</p>
+          <h2 className="semi-condensed truncate text-[19px] font-bold leading-tight">{w.name}</h2>
         </div>
         <Link href={`/train?${q}`} className="btn btn-ghost btn-sm ml-auto">
           Open
@@ -193,6 +238,7 @@ function TrainingCard({ workouts, q }: { workouts: Workout[]; q: string }) {
           );
         })}
       </ul>
+      <CardioLine cardio={cardio} />
     </section>
   );
 }

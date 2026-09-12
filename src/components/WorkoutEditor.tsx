@@ -16,6 +16,7 @@ export function WorkoutEditor({ workout, onChange, onDeleted }: { workout: Worko
   const [picking, setPicking] = useState(false);
   const [name, setName] = useState(workout.name);
   const [notes, setNotes] = useState(workout.notes);
+  const [duration, setDuration] = useState(workout.duration_min?.toString() ?? "");
 
   const mutate = async (url: string, method: string, body?: unknown) => {
     try {
@@ -67,6 +68,25 @@ export function WorkoutEditor({ workout, onChange, onDeleted }: { workout: Worko
             </div>
           ))}
         </dl>
+        <label className="mt-3 flex items-center gap-2">
+          <span className="text-[13px] font-semibold text-ink-2">Session length</span>
+          <input
+            type="number"
+            inputMode="numeric"
+            min={0}
+            max={600}
+            className="field h-10 w-24"
+            placeholder="—"
+            value={duration}
+            aria-label="Session length in minutes"
+            onChange={(e) => setDuration(e.target.value)}
+            onBlur={() => {
+              const next = duration.trim() === "" ? null : Number(duration);
+              if (next !== workout.duration_min) mutate(`/api/workouts/${workout.id}`, "PATCH", { duration_min: next });
+            }}
+          />
+          <span className="text-[13px] text-muted">min</span>
+        </label>
       </section>
 
       {workout.exercises.map((ex) => (

@@ -8,13 +8,18 @@ export const GET = handle(async (_req: Request, ctx: RouteContext<"/api/workouts
   return w ? json({ workout: w }) : fail("Workout not found", 404);
 });
 
-const Patch = z.object({ name: z.string().trim().min(1).max(60).optional(), notes: z.string().max(2000).optional() });
+const Patch = z.object({
+  name: z.string().trim().min(1).max(60).optional(),
+  notes: z.string().max(2000).optional(),
+  duration_min: z.coerce.number().min(0).max(600).nullable().optional(),
+});
 
 export const PATCH = handle(async (req: Request, ctx: RouteContext<"/api/workouts/[id]">) => {
   const id = Number((await ctx.params).id);
   const p = Patch.parse(await req.json());
   if (p.name !== undefined) db.prepare("UPDATE workouts SET name = ? WHERE id = ?").run(p.name, id);
   if (p.notes !== undefined) db.prepare("UPDATE workouts SET notes = ? WHERE id = ?").run(p.notes, id);
+  if (p.duration_min !== undefined) db.prepare("UPDATE workouts SET duration_min = ? WHERE id = ?").run(p.duration_min, id);
   return json({ workout: getWorkout(id) });
 });
 

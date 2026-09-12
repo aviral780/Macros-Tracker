@@ -6,19 +6,25 @@ import { api, useData } from "@/lib/client";
 import { formatDay, relativeDayLabel } from "@/lib/dates";
 import { fmt } from "@/lib/nutrition";
 import { useDate } from "@/lib/useDate";
-import type { Workout } from "@/lib/types";
+import { DEFAULT_PLAN, type CardioEntry, type TrainingPlan, type Workout } from "@/lib/types";
+import { CardioBlock } from "./CardioBlock";
 import { DateNav } from "./DateNav";
 import { Icon } from "./Icon";
 import { useToast } from "./Toast";
 import { WorkoutEditor } from "./WorkoutEditor";
 
-type Day = { workouts: Workout[]; date: string };
+type Day = {
+  workouts: Workout[];
+  date: string;
+  cardio: CardioEntry[];
+  cardioWeek: { days: number; minutes: number };
+  plan: TrainingPlan;
+  nextDay: string;
+};
 type History = {
-  history: { id: number; date: string; name: string; exercises: number; sets: number; volume: number }[];
+  history: { id: number; date: string; name: string; duration_min: number | null; exercises: number; sets: number; volume: number }[];
   templates: { name: string; id: number }[];
 };
-
-const SPLITS = ["Push", "Pull", "Legs", "Upper", "Lower", "Full body"];
 
 export function TrainView() {
   const [date, setDate] = useDate();
@@ -28,7 +34,10 @@ export function TrainView() {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const workouts = day.data?.date === date ? day.data.workouts : [];
+  const onDay = day.data?.date === date ? day.data : null;
+  const workouts = onDay?.workouts ?? [];
+  const plan = onDay?.plan ?? DEFAULT_PLAN;
+  const nextDay = onDay?.nextDay ?? plan.days[0];
 
   const start = async (body: { name: string; copyFrom?: number }) => {
     setBusy(true);
@@ -43,6 +52,9 @@ export function TrainView() {
       setBusy(false);
     }
   };
+
+  const templateFor = (name: string) =>
+    hist.data?.templates.find((t) => t.name.toLowerCase() === name.toLowerCase())?.id;
 
   const replace = (w: Workout) =>
     day.setData((d) => (d ? { ...d, workouts: d.workouts.map((x) => (x.id === w.id ? w : x)) } : d));
@@ -81,8 +93,35 @@ export function TrainView() {
           ) : (
             <section className="panel p-5">
               <h2 className="semi-condensed text-[20px] font-bold">Start a workout for {relativeDayLabel(date).toLowerCase() === "today" ? "today" : formatDay(date)}</h2>
+
+              <div className="mt-4">
+                <p className="field-label">
+                  Your split · next up <span className="text-ink">{nextDay}</span>
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {plan.days.map((d) => {
+                    const isNext = d === nextDay;
+                    return (
+                      <button
+                        key={d}
+                        type="button"
+                        className={`btn btn-sm ${isNext ? "btn-primary" : "btn-quiet"}`}
+                        disabled={busy}
+                        onClick={() => start({ name: d, copyFrom: templateFor(d) })}
+                      >
+                        {isNext && <Icon name="spark" size={14} />}
+                        {d}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="mt-2 text-[13px] text-muted">
+                  Starts the day and pulls in the exercises you did last time you trained it.
+                </p>
+              </div>
+
               {hist.data && hist.data.templates.length > 0 && (
-                <div className="mt-4">
+                <div className="mt-5">
                   <p className="field-label">Repeat a previous session</p>
                   <div className="flex flex-wrap gap-2">
                     {hist.data.templates.map((t) => (
@@ -111,15 +150,20 @@ export function TrainView() {
                     Start
                   </button>
                 </div>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {SPLITS.map((s) => (
-                    <button type="button" key={s} className="btn btn-quiet btn-sm" onClick={() => setName(s)}>
-                      {s}
-                    </button>
-                  ))}
-                </div>
               </form>
             </section>
+          )}
+
+          {onDay && (
+            <div className="mt-6">
+              <CardioBlock
+                date={date}
+                cardio={onDay.cardio}
+                plan={plan}
+                week={onDay.cardioWeek}
+                onChange={() => day.reload()}
+              />
+            </div>
           )}
         </div>
 

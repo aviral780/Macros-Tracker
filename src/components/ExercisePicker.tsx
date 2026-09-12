@@ -21,12 +21,21 @@ export function ExercisePicker({
   const [q, setQ] = useState("");
   const [muscle, setMuscle] = useState("Other");
 
+  const term = q.trim().toLowerCase();
   const list = useMemo(() => {
     const all = data?.exercises ?? [];
-    const term = q.trim().toLowerCase();
     return term ? all.filter((e) => e.name.toLowerCase().includes(term) || e.muscle.toLowerCase().includes(term)) : all;
-  }, [data, q]);
-  const exact = list.some((e) => e.name.toLowerCase() === q.trim().toLowerCase());
+  }, [data, term]);
+
+  // The API returns most-used first, so regulars fall out of the data with no curation.
+  const regulars = useMemo(() => (term ? [] : list.filter((e) => e.uses > 0).slice(0, 8)), [list, term]);
+  const rest = useMemo(() => {
+    const skip = new Set(regulars.map((e) => e.id));
+    const others = list.filter((e) => !skip.has(e.id));
+    return term ? others : [...others].sort((a, b) => a.muscle.localeCompare(b.muscle) || a.name.localeCompare(b.name));
+  }, [list, regulars, term]);
+
+  const exact = list.some((e) => e.name.toLowerCase() === term);
 
   const pick = (p: Parameters<typeof onPick>[0]) => {
     onPick(p);
@@ -61,8 +70,28 @@ export function ExercisePicker({
           </div>
         </div>
       )}
-      <ul className="mt-3 -mx-2">
-        {list.map((e) => (
+      {regulars.length > 0 && (
+        <>
+          <p className="field-label mt-4">Your regulars</p>
+          <ul className="-mx-2">
+            {regulars.map((e) => (
+              <li key={e.id}>
+                <button
+                  className="flex w-full items-center gap-3 rounded-lg px-2 py-2.5 text-left hover:bg-panel-2"
+                  onClick={() => pick({ exerciseId: e.id })}
+                >
+                  <span className="flex-1 text-[15px] font-semibold">{e.name}</span>
+                  <span className="text-[12px] text-muted tnum">{e.uses}×</span>
+                  <Icon name="plus" size={16} className="text-muted" />
+                </button>
+              </li>
+            ))}
+          </ul>
+          <p className="field-label mt-4">Everything else</p>
+        </>
+      )}
+      <ul className={regulars.length > 0 ? "-mx-2" : "mt-3 -mx-2"}>
+        {rest.map((e) => (
           <li key={e.id}>
             <button className="flex w-full items-center gap-3 rounded-lg px-2 py-2.5 text-left hover:bg-panel-2" onClick={() => pick({ exerciseId: e.id })}>
               <span className="flex-1 text-[15px] font-medium">{e.name}</span>

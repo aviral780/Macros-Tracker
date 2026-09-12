@@ -70,9 +70,48 @@ export type Workout = {
   date: string;
   name: string;
   notes: string;
+  /** Session length in minutes — typed in, or filled by the Apple Health sync. */
+  duration_min: number | null;
+  calories: number | null;
+  avg_hr: number | null;
   exercises: WorkoutExercise[];
 };
 
-export type Exercise = { id: number; name: string; muscle: string; custom: boolean };
+export type Exercise = { id: number; name: string; muscle: string; custom: boolean; uses: number };
+
+export type CardioEntry = {
+  id: number;
+  date: string;
+  kind: string;
+  minutes: number;
+  incline: number | null;
+  speed: number | null;
+  distance_km: number | null;
+  calories: number | null;
+  avg_hr: number | null;
+  source: "manual" | "health";
+};
+
+/** The training split and the targets it is measured against. Editable in Settings. */
+export type TrainingPlan = {
+  /** Rotation names, in order. The next session is the one after the last logged. */
+  days: string[];
+  cardioPerWeek: number;
+  cardioMinutes: number;
+  cardioKind: string;
+  cardioIncline: number;
+  sessionMinMinutes: number;
+  sessionMaxMinutes: number;
+};
+
+export const DEFAULT_PLAN: TrainingPlan = {
+  days: ["Chest & Triceps", "Back & Biceps", "Legs & Shoulders", "Arms", "Back & Chest", "Shoulders"],
+  cardioPerWeek: 4,
+  cardioMinutes: 20,
+  cardioKind: "Incline treadmill",
+  cardioIncline: 10,
+  sessionMinMinutes: 80,
+  sessionMaxMinutes: 100,
+};
 
 export type AIProvider = "gemini" | "groq" | "ollama" | "anthropic";
