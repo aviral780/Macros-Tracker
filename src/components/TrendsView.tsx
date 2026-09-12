@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { api, useData } from "@/lib/client";
 import { addDays, formatDay, todayISO } from "@/lib/dates";
 import { fmt } from "@/lib/nutrition";
-import type { Goals } from "@/lib/types";
+import type { Goals, TrainingPlan } from "@/lib/types";
 import { Chart, type Datum } from "./Chart";
 import { Icon } from "./Icon";
 import { useToast } from "./Toast";
@@ -13,9 +13,12 @@ type Trends = {
   from: string;
   to: string;
   goals: Goals;
+  plan: TrainingPlan;
+  streaks: { current: number; longest: number; totalDays: number };
   days: { date: string; calories: number; protein: number; carbs: number; fat: number }[];
   weights: { date: string; kg: number }[];
   training: { date: string; workouts: number; volume: number; sets: number }[];
+  cardio: { date: string; minutes: number; sessions: number }[];
 };
 
 const RANGES = [7, 30, 90];
@@ -72,7 +75,53 @@ export function TrendsView() {
     const sessions = data.training.reduce((a, t) => a + t.workouts, 0);
     const firstW = data.weights[0];
     const lastW = data.weights[data.weights.length - 1];
-    return { calories, protein, weight, volume, avg, onTarget, proteinHit, sessions, loggedDays: logged.length, firstW, lastW };
+
+    // Per-day consistency, plus cardio rolled up into the same Monday weeks as volume.
+    const trainedOn = new Set(data.training.filter((t) => t.workouts > 0).map((t) => t.date));
+    const cardioByDay = new Map(data.cardio.map((c) => [c.date, c]));
+    const consistency = dates.map((d) => ({
+      date: d,
+      label: label(d),
+      trained: trainedOn.has(d),
+      cardioMinutes: cardioByDay.get(d)?.minutes ?? 0,
+    }));
+
+    const cardioWeeks = new Map<string, number>();
+    for (const c of data.cardio) {
+      const monday = addDays(c.date, -((new Date(c.date + "T00:00:00").getDay() + 6) % 7));
+      cardioWeeks.set(monday, (cardioWeeks.get(monday) ?? 0) + c.minutes);
+    }
+    const cardioChart: Datum[] = [...weeks.keys()]
+      .concat([...cardioWeeks.keys()])
+      .filter((v, i, a) => a.indexOf(v) === i)
+      .sort((a, b) => a.localeCompare(b))
+      .map((wk) => ({
+        x: wk,
+        label: formatDay(wk, { day: "numeric", month: "short" }),
+        values: { minutes: Math.round(cardioWeeks.get(wk) ?? 0) },
+      }));
+
+    const cardioDays = data.cardio.length;
+    const cardioMinutes = data.cardio.reduce((a, c) => a + c.minutes, 0);
+
+    return {
+      calories,
+      protein,
+      weight,
+      volume,
+      avg,
+      onTarget,
+      proteinHit,
+      sessions,
+      loggedDays: logged.length,
+      firstW,
+      lastW,
+      consistency,
+      cardioChart,
+      cardioDays,
+      cardioMinutes,
+      totalDays: dates.length,
+    };
   }, [data, range]);
 
   const logWeight = async (e: React.FormEvent) => {
@@ -107,16 +156,20 @@ export function TrendsView() {
       {view && data && (
         <div className={`grid gap-5 transition-opacity ${loading ? "opacity-60" : ""}`}>
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <Tile
+              label="Training streak"
+              value={data.streaks.current > 0 ? `${data.streaks.current}` : "—"}
+              sub={`Best ${data.streaks.longest} · ${data.streaks.totalDays} days trained all time`}
+            />
             <Tile label="Average calories" value={view.loggedDays ? fmt(view.avg.calories) : "—"} sub={`Goal ${fmt(data.goals.calories)} · ${view.loggedDays} days logged`} />
             <Tile label="Average protein" value={view.loggedDays ? `${fmt(view.avg.protein)} g` : "—"} sub={`Goal ${fmt(data.goals.protein)} g · hit on ${view.proteinHit} days`} />
-            <Tile label="Days within 10% of calories" value={`${view.onTarget}`} sub={`of ${view.loggedDays} logged days`} />
             <Tile
               label="Bodyweight"
               value={view.lastW ? `${view.lastW.kg} kg` : "—"}
               sub={
                 view.firstW && view.lastW && view.firstW.date !== view.lastW.date
                   ? `${view.lastW.kg - view.firstW.kg >= 0 ? "+" : "−"}${Math.abs(Math.round((view.lastW.kg - view.firstW.kg) * 10) / 10)} kg since ${formatDay(view.firstW.date, { day: "numeric", month: "short" })}`
-                  : `${view.sessions} training sessions`
+                  : `${view.onTarget} of ${view.loggedDays} days within 10% of calories`
               }
             />
           </div>
@@ -164,6 +217,32 @@ export function TrendsView() {
           </div>
 
           <section className="panel p-4">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h2 className="text-[15px] font-bold">Consistency</h2>
+              <p className="text-[13px] text-muted tnum">
+                {view.sessions} sessions · {view.cardioDays} cardio days · {fmt(view.cardioMinutes)} min
+              </p>
+            </div>
+            <div className="mt-3 grid gap-2">
+              <ConsistencyRow
+                label="Training"
+                color="var(--train)"
+                track="var(--train-track)"
+                days={view.consistency.map((d) => ({ ...d, on: d.trained }))}
+              />
+              <ConsistencyRow
+                label="Cardio"
+                color="var(--carbs)"
+                track="var(--carbs-track)"
+                days={view.consistency.map((d) => ({ ...d, on: d.cardioMinutes > 0 }))}
+              />
+            </div>
+            <p className="mt-2.5 text-[12px] text-muted">
+              Target {data.plan.days.length} sessions and {data.plan.cardioPerWeek} cardio days a week.
+            </p>
+          </section>
+
+          <section className="panel p-4">
             <Chart
               title="Training volume per week (kg)"
               kind="bar"
@@ -173,8 +252,58 @@ export function TrendsView() {
               height={200}
             />
           </section>
+
+          <section className="panel p-4">
+            <Chart
+              title="Cardio minutes per week"
+              kind="bar"
+              data={view.cardioChart}
+              series={[{ key: "minutes", label: "Minutes", color: "var(--carbs)" }]}
+              reference={{
+                value: data.plan.cardioPerWeek * data.plan.cardioMinutes,
+                label: `Target ${data.plan.cardioPerWeek * data.plan.cardioMinutes} min`,
+              }}
+              unit=" min"
+              height={200}
+            />
+          </section>
         </div>
       )}
+    </div>
+  );
+}
+
+/** One square per day in range: filled when that day had the activity. */
+function ConsistencyRow({
+  label,
+  color,
+  track,
+  days,
+}: {
+  label: string;
+  color: string;
+  track: string;
+  days: { date: string; label: string; on: boolean }[];
+}) {
+  const hit = days.filter((d) => d.on).length;
+  return (
+    <div>
+      <div className="flex items-baseline justify-between text-[13px]">
+        <span className="font-semibold">{label}</span>
+        <span className="text-muted tnum">
+          {hit} of {days.length} days
+        </span>
+      </div>
+      <div className="mt-1.5 flex gap-[3px]">
+        {days.map((d) => (
+          <span
+            key={d.date}
+            title={`${d.label}${d.on ? "" : " — nothing logged"}`}
+            className="h-6 min-w-0 flex-1 rounded-[3px]"
+            style={{ background: d.on ? color : track }}
+          />
+        ))}
+      </div>
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import "server-only";
 import { db } from "./db";
-import { addDays, todayISO, weekRange } from "./dates";
+import { todayISO, weekRange } from "./dates";
 import { getCardioSummary, getPlan, nextSplitDay } from "./queries";
 
 export type Snapshot = {
@@ -20,26 +20,35 @@ export type Snapshot = {
 const dayHasWorkout = (date: string) =>
   !!db.prepare("SELECT 1 FROM workouts WHERE date = ? LIMIT 1").get(date);
 
+const diffDays = (a: string, b: string) => Math.round((Date.parse(b) - Date.parse(a)) / 86_400_000);
+
 /**
- * Consecutive training days walking back from today. A single rest day is part of the
- * pattern on a six-day split, so only two missed days in a row end the run.
+ * Unbroken runs of training days. A single rest day is part of the pattern on a six-day
+ * split, so a run only ends once two days pass with nothing logged.
  */
-function trainingStreak(today: string) {
-  let streak = 0;
-  let missed = 0;
-  for (let i = 0; i < 400; i++) {
-    const date = addDays(today, -i);
-    if (dayHasWorkout(date)) {
-      streak++;
-      missed = 0;
-    } else {
-      // Today not being logged yet shouldn't count against a run that is still alive.
-      if (i === 0) continue;
-      missed++;
-      if (missed >= 2) break;
+function trainingRuns(dates: string[]) {
+  const runs: { length: number; from: string; to: string }[] = [];
+  let start = 0;
+  for (let i = 1; i <= dates.length; i++) {
+    if (i === dates.length || diffDays(dates[i - 1], dates[i]) > 2) {
+      runs.push({ length: i - start, from: dates[start], to: dates[i - 1] });
+      start = i;
     }
   }
-  return streak;
+  return runs;
+}
+
+export function streakStats(today = todayISO()) {
+  const dates = (db.prepare("SELECT DISTINCT date FROM workouts ORDER BY date").all() as { date: string }[]).map(
+    (r) => r.date,
+  );
+  const runs = trainingRuns(dates);
+  const latest = runs.at(-1);
+  return {
+    current: latest && diffDays(latest.to, today) <= 2 ? latest.length : 0,
+    longest: runs.reduce((best, r) => Math.max(best, r.length), 0),
+    totalDays: dates.length,
+  };
 }
 
 export function snapshot(): Snapshot {
@@ -65,7 +74,7 @@ export function snapshot(): Snapshot {
     loggedToday: !!db.prepare("SELECT 1 FROM food_entries WHERE date = ? LIMIT 1").get(today),
     cardioToday: !!db.prepare("SELECT 1 FROM cardio WHERE date = ? LIMIT 1").get(today),
     daysSinceLast,
-    streak: trainingStreak(today),
+    streak: streakStats(today).current,
     weekWorkouts: weekWorkouts.n,
     weekTarget: plan.days.length,
     weekCardio: getCardioSummary(week.from, week.to).days,
