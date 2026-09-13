@@ -7,7 +7,7 @@ import { Icon } from "./Icon";
 import { useToast } from "./Toast";
 
 type ProviderInfo = { label: string; needsKey: boolean; keyUrl?: string; fallbackModel: string; note: string; baseUrl: string };
-type Resp = { provider: AIProvider; model: string; baseUrl: string; keyHint: string; keyFromEnv: boolean; providers: Record<AIProvider, ProviderInfo> };
+type Resp = { provider: AIProvider; model: string; insightModel: string; baseUrl: string; keyHint: string; keyFromEnv: boolean; providers: Record<AIProvider, ProviderInfo> };
 
 export function SettingsView({ lanUrls }: { lanUrls: string[] }) {
   const { data, reload } = useData<Resp>("/api/settings/ai");
@@ -20,6 +20,7 @@ function SettingsForm({ data, reload, lanUrls }: { data: Resp; reload: () => Pro
   const [provider, setProvider] = useState<AIProvider>(data.provider);
   const [key, setKey] = useState("");
   const [model, setModel] = useState(data.model);
+  const [insightModel, setInsightModel] = useState(data.insightModel);
   const [baseUrl, setBaseUrl] = useState(data.baseUrl);
   const [models, setModels] = useState<string[] | null>(null);
   const [detecting, setDetecting] = useState(false);
@@ -47,7 +48,7 @@ function SettingsForm({ data, reload, lanUrls }: { data: Resp; reload: () => Pro
   const save = async () => {
     setSaving(true);
     try {
-      await api("/api/settings/ai", { method: "PUT", body: { provider, apiKey: key || undefined, model, baseUrl } });
+      await api("/api/settings/ai", { method: "PUT", body: { provider, apiKey: key || undefined, model, insightModel, baseUrl } });
       setKey("");
       toast("Saved AI settings");
       reload();
@@ -104,6 +105,7 @@ function SettingsForm({ data, reload, lanUrls }: { data: Resp; reload: () => Pro
                     setProvider(id);
                     setModels(null);
                     setModel(id === data.provider ? data.model : "");
+                    setInsightModel(id === data.provider ? data.insightModel : "");
                     setBaseUrl(id === data.provider ? data.baseUrl : "");
                     setTest({ state: "idle", text: "" });
                   }}
@@ -163,7 +165,38 @@ function SettingsForm({ data, reload, lanUrls }: { data: Resp; reload: () => Pro
               {detecting ? "Detecting…" : "Detect models"}
             </button>
           </div>
-          <p className="mt-1.5 text-[13px] text-muted">Leave empty to pick automatically. Free-tier model names change often; Detect lists what your key can use today.</p>
+          <p className="mt-1.5 text-[13px] text-muted">Reads your food photos, so accuracy matters most here. Leave empty to pick automatically.</p>
+        </div>
+
+        <div className="mt-5">
+          <span className="field-label">Insights model</span>
+          {models ? (
+            <select
+              className="field"
+              value={insightModel}
+              onChange={(e) => setInsightModel(e.target.value)}
+              aria-label="Insights model"
+            >
+              <option value="">Automatic — biggest free allowance</option>
+              {models.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              className="field font-mono text-[14px]"
+              value={insightModel}
+              placeholder="Automatic — biggest free allowance"
+              onChange={(e) => setInsightModel(e.target.value)}
+              aria-label="Insights model"
+            />
+          )}
+          <p className="mt-1.5 text-[13px] text-muted">
+            Runs the Coach page, food notes and exercise notes. Free-tier request caps are per model, so keeping insights
+            on a lighter model stops them eating your photo quota.
+          </p>
         </div>
 
         {provider === "ollama" && (

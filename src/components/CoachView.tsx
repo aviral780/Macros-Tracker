@@ -21,6 +21,7 @@ type Plan = {
   entries?: number;
   needed?: number;
   model?: string;
+  target?: { calories: number; protein: number };
   payload?: {
     summary: string;
     meals: { meal: string; items: PlanItem[] }[];
@@ -133,6 +134,7 @@ export function CoachView() {
           ) : p?.payload ? (
             <div>
               <p className="px-4 pt-3 text-[14px] text-ink-2">{p.payload.summary}</p>
+              {p.target && <TargetCheck totals={p.payload.totals} target={p.target} />}
               <dl className="mt-3 grid grid-cols-4 border-y border-line text-center">
                 {[
                   ["kcal", p.payload.totals.calories],
@@ -187,5 +189,48 @@ function Block({ title, items, icon, tone }: { title: string; items: string[]; i
         ))}
       </ul>
     </>
+  );
+}
+
+/**
+ * Says plainly when the plan misses, and why. A calorie goal that is lower than the
+ * macro targets themselves is unsatisfiable by any plan, so name that rather than
+ * quietly shipping a day that is hundreds of calories over.
+ */
+function TargetCheck({
+  totals,
+  target,
+}: {
+  totals: { calories: number; protein: number };
+  target: { calories: number; protein: number };
+}) {
+  const overCalories = totals.calories - target.calories;
+  const shortProtein = target.protein - totals.protein;
+  const missesCalories = Math.abs(overCalories) > target.calories * 0.05;
+  const missesProtein = shortProtein > target.protein * 0.05;
+  if (!missesCalories && !missesProtein) {
+    return (
+      <p className="mx-4 mt-3 flex items-center gap-2 rounded-xl bg-panel-2 px-3 py-2 text-[13px] text-train">
+        <Icon name="check" size={15} className="shrink-0" />
+        Lands on both your calorie and protein targets.
+      </p>
+    );
+  }
+  return (
+    <p className="mx-4 mt-3 flex items-start gap-2 rounded-xl bg-panel-2 px-3 py-2 text-[13px] text-ink-2">
+      <Icon name="alert" size={15} className="mt-0.5 shrink-0 text-fat" />
+      <span>
+        {missesCalories && (
+          <>
+            {overCalories > 0 ? `${fmt(overCalories)} kcal over` : `${fmt(-overCalories)} kcal under`} your{" "}
+            {fmt(target.calories)} target
+            {missesProtein ? ", and " : ". "}
+          </>
+        )}
+        {missesProtein && `${fmt(shortProtein)} g short of ${fmt(target.protein)} g protein. `}
+        Your macro targets add up to more calories than your calorie goal, so no day can hit both — worth fixing on
+        the Goals page.
+      </span>
+    </p>
   );
 }

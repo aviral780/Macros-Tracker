@@ -247,15 +247,88 @@ function sumPlan(plan: DayPlan) {
     );
 }
 
-const offTarget = (t: { calories: number; protein: number }, goal: { calories: number; protein: number }) =>
-  Math.abs(t.calories - goal.calories) > goal.calories * 0.05 || t.protein < goal.protein * 0.95;
+/**
+ * Scales portions to hit the targets, because models reliably fail at satisfying two
+ * numeric constraints at once. Raises the leanest protein sources first and trims the
+ * least protein-dense items, within sane portion bounds. If their usual foods simply
+ * can't reach the protein target inside the calorie budget, this lands as close as
+ * possible and the caller reports the honest gap.
+ */
+function balancePortions(plan: DayPlan, goal: { calories: number; protein: number }): DayPlan {
+  const items = plan.meals.flatMap((m) => m.items);
+  if (items.length === 0) return plan;
+
+  const scale = items.map(() => 1);
+  const density = items.map((i) => (i.calories > 0 ? i.protein / i.calories : 0));
+  const totals = () =>
+    items.reduce(
+      (a, i, n) => ({ calories: a.calories + i.calories * scale[n], protein: a.protein + i.protein * scale[n] }),
+      { calories: 0, protein: 0 },
+    );
+
+  const pick = (want: "max" | "min", canMove: (n: number) => boolean) => {
+    let best = -1;
+    for (let n = 0; n < items.length; n++) {
+      if (!canMove(n)) continue;
+      if (best === -1 || (want === "max" ? density[n] > density[best] : density[n] < density[best])) best = n;
+    }
+    return best;
+  };
+
+  // Narrow bounds on purpose: this nudges portions, it does not redesign the day.
+  const MAX = 1.6;
+  const MIN = 0.6;
+
+  for (let step = 0; step < 400; step++) {
+    const t = totals();
+    const shortProtein = goal.protein - t.protein;
+    const overCalories = t.calories - goal.calories;
+
+    if (shortProtein > 0.5) {
+      const n = pick("max", (i) => scale[i] < MAX);
+      if (n === -1) break;
+      scale[n] += 0.05;
+    } else if (overCalories > goal.calories * 0.03) {
+      const n = pick("min", (i) => scale[i] > MIN);
+      if (n === -1) break;
+      scale[n] -= 0.05;
+    } else if (overCalories < -goal.calories * 0.03) {
+      const n = pick("max", (i) => scale[i] < MAX);
+      if (n === -1) break;
+      scale[n] += 0.05;
+    } else {
+      break;
+    }
+  }
+
+  let n = 0;
+  const meals = plan.meals.map((m) => ({
+    ...m,
+    items: m.items.map((i) => {
+      const s = scale[n++];
+      const round = (v: number) => Math.round(v * s);
+      return {
+        ...i,
+        calories: round(i.calories),
+        protein: round(i.protein),
+        carbs: round(i.carbs),
+        fat: round(i.fat),
+        portion: Math.abs(s - 1) < 0.03 ? i.portion : `${i.portion} × ${s.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}`,
+      };
+    }),
+  }));
+
+  return { ...plan, meals, totals: sumPlan({ ...plan, meals }) };
+}
 
 const PLAN_SYSTEM = `You are a sports dietitian building one day of eating for a strength athlete, using foods they already eat and enjoy.
 
 Rules:
+- PROTEIN IS THE HARD CONSTRAINT. The items must add up to at least the protein target. Getting this right matters more than anything else in the plan.
+- Calories should land within 3% of the calorie target. If protein is hard to reach, raise the portion sizes of the leanest high-protein foods rather than adding fat or carbs.
 - Build breakfast, lunch, dinner and one snack block. Use their logged foods wherever possible; at most two new items, and only ones that match their cuisine.
-- The day's totals must land within 3% of the calorie target and at or above the protein target. Do the arithmetic and make it add up.
-- Give each item a realistic household portion ("2 rotis", "1 katori", "200 g").
+- Give each item a realistic household portion ("2 rotis", "1 katori", "200 g"). Portions may be scaled up or down to make the numbers work.
+- Do the arithmetic item by item and check the column totals before answering.
 - summary: one or two sentences on how the day is built and where the protein comes from.
 - totals must be the actual sum of the items you listed.
 
@@ -266,36 +339,42 @@ export async function dayPlan(force = false) {
   const history = foodHistory(40);
   if (history.length < 5) return { ready: false as const, entries: history.length, needed: 5 };
 
+  const goals = getGoals();
+  const target = { calories: goals.calories, protein: goals.protein };
+
   if (!force) {
     const hit = readCache<DayPlan>("dayplan", "me", 3);
-    if (hit) return { ready: true as const, ...hit };
+    if (hit) return { ready: true as const, target, ...hit };
   }
 
-  const goals = getGoals();
   const lines = history.map((f) => `${f.name} (${f.times}x) — ${f.calories} kcal, ${f.protein}P ${f.carbs}C ${f.fat}F`).join("\n");
   const brief = `Targets for the day: ${goals.calories} kcal, ${goals.protein} g protein, ${goals.carbs} g carbs, ${goals.fat} g fat.\nFoods they actually eat:\n\n${lines}`;
 
   const ask = (user: string) =>
-    askJSON({ system: PLAN_SYSTEM, user, schema: DayPlanSchema, maxTokens: 2500 });
+    askJSON({ system: PLAN_SYSTEM, user, schema: DayPlanSchema, maxTokens: 3200 });
 
+  // Ask until the plan is structurally complete; balancing a two-item day produces nonsense.
+  const complete = (p: DayPlan) => p.meals.length >= 3 && p.meals.flatMap((m) => m.items).length >= 5;
   let { data, model } = await ask(brief);
-  let totals = sumPlan(data);
-
-  // One corrective pass with the real arithmetic fed back, which is what actually lands it.
-  if (offTarget(totals, goals)) {
+  for (let pass = 0; pass < 2 && !complete(data); pass++) {
     const retry = await ask(
-      `${brief}\n\nYour previous plan summed to ${totals.calories} kcal and ${totals.protein} g protein, which misses the target. Rebuild it so the items themselves add up to ${goals.calories} kcal (within 3%) and at least ${goals.protein} g protein. Adjust portions rather than adding many new foods.`,
+      `${brief}\n\nYour previous answer only covered ${data.meals.length} meal block(s). Return the full day: breakfast, lunch, dinner and a snack block, with every item listed.`,
     );
-    const retryTotals = sumPlan(retry.data);
-    // Keep whichever attempt actually lands closer on calories.
-    if (Math.abs(retryTotals.calories - goals.calories) < Math.abs(totals.calories - goals.calories)) {
+    if (complete(retry.data) || retry.data.meals.length > data.meals.length) {
       data = retry.data;
       model = retry.model;
-      totals = retryTotals;
     }
   }
 
-  const payload: DayPlan = { ...data, totals };
+  // One model pass for the food choices, then arithmetic we control for the portions.
+  const balanced = balancePortions(data, goals);
+  const payload: DayPlan = balanced;
   writeCache("dayplan", "me", payload, model);
-  return { ready: true as const, payload, model, created_at: new Date().toISOString() };
+  return {
+    ready: true as const,
+    payload,
+    model,
+    target,
+    created_at: new Date().toISOString(),
+  };
 }

@@ -42,3 +42,29 @@ export function rankModels(provider: AIProvider, ids: string[]) {
     .sort((a, b) => b.s - a.s)
     .map((m) => m.id);
 }
+
+/**
+ * Free-tier request caps are per model, and the newest model has the smallest one
+ * (20/day on gemini-3.8-flash). Text insights don't need that model, so they get
+ * ranked toward the lite tiers, which carry far larger allowances.
+ */
+export function rankInsightModels(provider: AIProvider, ids: string[]) {
+  if (provider !== "gemini") return rankModels(provider, ids);
+  const score = (id: string) => {
+    const s = id.toLowerCase();
+    if (!s.startsWith("gemini")) return -1;
+    if (/(embedding|image|tts|audio|live|aqa|robotics|computer|native|transcribe|omni)/.test(s)) return -1;
+    if (s.includes("pro")) return -1; // smallest free allowance of the lot
+    let v = versionOf(s) * 10;
+    if (s.includes("lite")) v += 200;
+    else if (s.includes("flash")) v += 100;
+    if (/(preview|exp)/.test(s)) v -= 50;
+    if (s.includes("latest")) v -= 5;
+    return v;
+  };
+  return ids
+    .map((id) => ({ id, s: score(id) }))
+    .filter((m) => m.s >= 0)
+    .sort((a, b) => b.s - a.s)
+    .map((m) => m.id);
+}

@@ -1,7 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { getSetting, setSetting } from "./db";
-import { rankModels } from "./models";
+import { rankInsightModels, rankModels } from "./models";
 import type { AIProvider } from "./types";
 
 type ProviderInfo = {
@@ -161,6 +161,27 @@ async function resolveModel(cfg: AIConfig) {
   return PROVIDERS[cfg.provider].fallbackModel;
 }
 
+/** Raw model ids from the provider, unranked. */
+async function rawModels(cfg: AIConfig) {
+  const res = await fetch(endpoint(cfg) + "models", { headers: headers(cfg), cache: "no-store" });
+  if (!res.ok) throw await describeFailure(res, cfg, "models");
+  const json = (await res.json()) as { data?: { id: string }[] };
+  return (json.data ?? []).map((m) => m.id.replace(/^models\//, ""));
+}
+
+/** Insights default to a big-free-allowance model so they can't eat the photo quota. */
+async function resolveInsightModel(cfg: AIConfig) {
+  if (cfg.insightModel) return cfg.insightModel;
+  try {
+    const [best] = rankInsightModels(cfg.provider, await rawModels(cfg));
+    if (best) {
+      saveAIConfig({ ...getSetting<AIConfig>("ai", DEFAULT_CONFIG), insightModel: best });
+      return best;
+    }
+  } catch {}
+  return "";
+}
+
 const num = z.coerce.number().catch(0).transform((n) => (Number.isFinite(n) && n > 0 ? n : 0));
 
 const AnalysisSchema = z.object({
@@ -250,13 +271,12 @@ async function requestJSON<T>(
   let errorBody: string | undefined;
   try {
     res = await call({ ...base, ...extras });
+    // Providers word this rejection differently per model (Gemini's lite tiers just say
+    // "invalid argument"), so any 400 earns one retry without the optional params.
     if (res.status === 400 && Object.keys(extras).length > 0) {
       errorBody = await res.text();
-      // Some models reject JSON mode or the thinking switch; retry plain and lean on the parser.
-      if (/response_format|json|reasoning|thinking/i.test(errorBody)) {
-        res = await call(base);
-        errorBody = undefined;
-      }
+      res = await call(base);
+      if (res.ok) errorBody = undefined;
     }
   } catch (e) {
     if (e instanceof Error && e.name === "TimeoutError")
@@ -273,15 +293,17 @@ async function requestJSON<T>(
     parsed = extractJSON(text);
   } catch (e) {
     if (e instanceof AIError) throw e;
-    throw new AIError("The model's answer wasn't valid data. Try again.");
+    // A malformed or truncated reply is worth another go on the same model.
+    throw new AIError("The model's answer wasn't valid data.", 502, true);
   }
   return schema.parse(parsed);
 }
 
 /** Other models on the same key, used only once the chosen one keeps coming back busy. */
-async function fallbackModels(cfg: AIConfig, primary: string) {
+async function fallbackModels(cfg: AIConfig, primary: string, insight = false) {
   try {
-    return (await listModels(cfg)).filter((m) => m !== primary).slice(0, 2);
+    const ranked = insight ? rankInsightModels(cfg.provider, await rawModels(cfg)) : await listModels(cfg);
+    return ranked.filter((m) => m !== primary).slice(0, 2);
   } catch {
     const fb = PROVIDERS[cfg.provider].fallbackModel;
     return fb && fb !== primary ? [fb] : [];
@@ -289,7 +311,12 @@ async function fallbackModels(cfg: AIConfig, primary: string) {
 }
 
 /** Runs `attempt` against the configured model, retrying transient busy errors, then other models. */
-async function withFallback<T>(cfg: AIConfig, attempt: (model: string) => Promise<T>, override?: string) {
+async function withFallback<T>(
+  cfg: AIConfig,
+  attempt: (model: string) => Promise<T>,
+  override?: string,
+  insight = false,
+) {
   const primary = override?.trim() || (await resolveModel(cfg));
   let primaryError: AIError | null = null;
 
@@ -305,7 +332,7 @@ async function withFallback<T>(cfg: AIConfig, attempt: (model: string) => Promis
     }
   }
 
-  for (const model of await fallbackModels(cfg, primary)) {
+  for (const model of await fallbackModels(cfg, primary, insight)) {
     try {
       return { data: await attempt(model), model };
     } catch {
@@ -345,7 +372,8 @@ export async function askJSON<T>(opts: {
     cfg,
     (model) =>
       requestJSON(cfg, model, opts.system, [{ type: "text", text: opts.user }], opts.schema, opts.maxTokens ?? 2048),
-    cfg.insightModel,
+    await resolveInsightModel(cfg),
+    true,
   );
 }
 
