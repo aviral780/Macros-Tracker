@@ -47,9 +47,9 @@ export const PROVIDERS: Record<AIProvider, ProviderInfo> = {
   },
 };
 
-export type AIConfig = { provider: AIProvider; apiKey: string; model: string; baseUrl: string };
+export type AIConfig = { provider: AIProvider; apiKey: string; model: string; baseUrl: string; insightModel: string };
 
-const DEFAULT_CONFIG: AIConfig = { provider: "gemini", apiKey: "", model: "", baseUrl: "" };
+const DEFAULT_CONFIG: AIConfig = { provider: "gemini", apiKey: "", model: "", baseUrl: "", insightModel: "" };
 
 export function getAIConfig(): AIConfig {
   const cfg = getSetting<AIConfig>("ai", DEFAULT_CONFIG);
@@ -120,8 +120,16 @@ async function describeFailure(res: Response, cfg: AIConfig, model: string, body
     return new AIError(`${who} rejected the API key. Check it in Settings.`, 401);
   if (res.status === 404)
     return new AIError(`${who} doesn't have the model "${model}". Open Settings and choose Detect models.`, 404);
-  if (res.status === 429)
-    return new AIError(`${who} hit a rate limit on your key.`, 429, true);
+  if (res.status === 429) {
+    const daily = /per day|daily|free_tier|quota/i.test(detail);
+    return new AIError(
+      daily
+        ? `${who} free-tier quota for "${model}" is used up for today. Pick a model with a bigger free allowance in Settings, or switch provider.`
+        : `${who} hit a rate limit on your key.`,
+      429,
+      true,
+    );
+  }
   if (OVERLOADED.has(res.status) || /overload|is busy|unavailable|capacity|try again/i.test(detail))
     return new AIError(`${who} is overloaded right now.`, 503, true);
   return new AIError(`${who} returned an error (${res.status}): ${detail}`);
@@ -201,23 +209,23 @@ function extractJSON(text: string) {
   return JSON.parse(cleaned.slice(start, end + 1));
 }
 
-type AnalysisInput = { imageDataUrl?: string; text?: string };
+type Content = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 
-/** One attempt against one model. Throws AIError; retryable ones are worth another go. */
-async function requestAnalysis(cfg: AIConfig, model: string, input: AnalysisInput): Promise<Analysis> {
-  const userText = input.imageDataUrl
-    ? `Log the food in this photo.${input.text ? `\nMy note: ${input.text}` : ""}`
-    : `Log this meal: ${input.text}`;
-  const content: unknown[] = [{ type: "text", text: userText }];
-  if (input.imageDataUrl) content.push({ type: "image_url", image_url: { url: input.imageDataUrl } });
-
+/** One attempt at one model: send messages, parse the JSON reply against a schema. */
+async function requestJSON<T>(
+  cfg: AIConfig,
+  model: string,
+  system: string,
+  content: Content[],
+  schema: z.ZodType<T>,
+  maxTokens: number,
+): Promise<T> {
   const base: Record<string, unknown> = {
     model,
     temperature: 0.2,
-    // The answer is one small JSON object, so a tight cap cuts latency and quota use.
-    max_tokens: 2048,
+    max_tokens: maxTokens,
     messages: [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: system },
       { role: "user", content },
     ],
   };
@@ -265,9 +273,9 @@ async function requestAnalysis(cfg: AIConfig, model: string, input: AnalysisInpu
     parsed = extractJSON(text);
   } catch (e) {
     if (e instanceof AIError) throw e;
-    throw new AIError("The model's answer wasn't valid food data. Try again.");
+    throw new AIError("The model's answer wasn't valid data. Try again.");
   }
-  return AnalysisSchema.parse(parsed);
+  return schema.parse(parsed);
 }
 
 /** Other models on the same key, used only once the chosen one keeps coming back busy. */
@@ -280,35 +288,81 @@ async function fallbackModels(cfg: AIConfig, primary: string) {
   }
 }
 
-export async function analyzeFood(input: AnalysisInput): Promise<Analysis & { model: string }> {
-  const cfg = getAIConfig();
-  if (PROVIDERS[cfg.provider].needsKey && !cfg.apiKey) {
-    throw new AIError("Add an API key in Settings to analyze food.", 400);
-  }
-  const primary = await resolveModel(cfg);
+/** Runs `attempt` against the configured model, retrying transient busy errors, then other models. */
+async function withFallback<T>(cfg: AIConfig, attempt: (model: string) => Promise<T>, override?: string) {
+  const primary = override?.trim() || (await resolveModel(cfg));
+  let primaryError: AIError | null = null;
 
-  const attempt = async (model: string, tries: number) => {
-    for (let i = 0; i < tries; i++) {
-      try {
-        return { ...(await requestAnalysis(cfg, model, input)), model };
-      } catch (e) {
-        if (!(e instanceof AIError) || !e.retryable) throw e;
-        if (i < tries - 1) await sleep(backoffMs(i));
-      }
+  for (let i = 0; i < 3; i++) {
+    try {
+      return { data: await attempt(primary), model: primary };
+    } catch (e) {
+      if (!(e instanceof AIError)) throw e;
+      // A bad key or a malformed request won't improve with retries or another model.
+      if (!e.retryable) throw e;
+      primaryError = e;
+      if (i < 2) await sleep(backoffMs(i));
     }
-    return null;
-  };
-
-  const onPrimary = await attempt(primary, 3);
-  if (onPrimary) return onPrimary;
+  }
 
   for (const model of await fallbackModels(cfg, primary)) {
-    const result = await attempt(model, 1);
-    if (result) return result;
+    try {
+      return { data: await attempt(model), model };
+    } catch {
+      // A fallback model failing says nothing useful about why the chosen one did.
+    }
   }
 
-  throw new AIError(
-    `${PROVIDERS[cfg.provider].label} stayed busy through several retries. Give it a minute, or switch provider in Settings.`,
-    503,
+  throw (
+    primaryError ??
+    new AIError(
+      `${PROVIDERS[cfg.provider].label} stayed busy through several retries. Give it a minute, or switch provider in Settings.`,
+      503,
+    )
   );
+}
+
+function requireKey(cfg: AIConfig) {
+  if (PROVIDERS[cfg.provider].needsKey && !cfg.apiKey) {
+    throw new AIError("Add an API key in Settings to use AI features.", 400);
+  }
+}
+
+/**
+ * Generic structured generation — the insight features build on this. Routes to
+ * `insightModel` when set, so text insights can run on a model with a bigger free
+ * allowance while photo analysis keeps the most accurate one.
+ */
+export async function askJSON<T>(opts: {
+  system: string;
+  user: string;
+  schema: z.ZodType<T>;
+  maxTokens?: number;
+}): Promise<{ data: T; model: string }> {
+  const cfg = getAIConfig();
+  requireKey(cfg);
+  return withFallback(
+    cfg,
+    (model) =>
+      requestJSON(cfg, model, opts.system, [{ type: "text", text: opts.user }], opts.schema, opts.maxTokens ?? 2048),
+    cfg.insightModel,
+  );
+}
+
+type AnalysisInput = { imageDataUrl?: string; text?: string };
+
+export async function analyzeFood(input: AnalysisInput): Promise<Analysis & { model: string }> {
+  const cfg = getAIConfig();
+  requireKey(cfg);
+
+  const userText = input.imageDataUrl
+    ? `Log the food in this photo.${input.text ? `\nMy note: ${input.text}` : ""}`
+    : `Log this meal: ${input.text}`;
+  const content: Content[] = [{ type: "text", text: userText }];
+  if (input.imageDataUrl) content.push({ type: "image_url", image_url: { url: input.imageDataUrl } });
+
+  const { data, model } = await withFallback(cfg, (m) =>
+    requestJSON(cfg, m, SYSTEM_PROMPT, content, AnalysisSchema, 2048),
+  );
+  return { ...data, model };
 }

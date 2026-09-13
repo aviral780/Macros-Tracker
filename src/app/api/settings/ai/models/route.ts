@@ -13,6 +13,6 @@ export const POST = handle(async (req: Request) => {
   const body = Body.parse(await req.json());
   const saved = getAIConfig();
   const apiKey = body.apiKey || (saved.provider === body.provider ? saved.apiKey : "");
-  const models = await listModels({ provider: body.provider, apiKey, model: "", baseUrl: body.baseUrl });
+  const models = await listModels({ provider: body.provider, apiKey, model: "", baseUrl: body.baseUrl, insightModel: "" });
   return json({ models });
 });

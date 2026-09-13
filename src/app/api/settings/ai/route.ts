@@ -11,6 +11,7 @@ export const GET = handle(() => {
   return json({
     provider: cfg.provider,
     model: cfg.model,
+    insightModel: cfg.insightModel,
     baseUrl: cfg.baseUrl,
     keyHint: mask(cfg.apiKey),
     keyFromEnv: !stored && !!cfg.apiKey,
@@ -22,14 +23,21 @@ const Body = z.object({
   provider: z.enum(["gemini", "groq", "ollama", "anthropic"]),
   apiKey: z.string().trim().optional(),
   model: z.string().trim().max(120).default(""),
+  insightModel: z.string().trim().max(120).default(""),
   baseUrl: z.string().trim().max(300).default(""),
 });
 
 export const PUT = handle(async (req: Request) => {
   const body = Body.parse(await req.json());
-  const current = getSetting("ai", { provider: "gemini", apiKey: "", model: "", baseUrl: "" });
+  const current = getSetting("ai", { provider: "gemini", apiKey: "", model: "", baseUrl: "", insightModel: "" });
   // Keys are per-provider; switching provider without a new key clears the old one.
   const apiKey = body.apiKey !== undefined ? body.apiKey : current.provider === body.provider ? current.apiKey : "";
-  saveAIConfig({ provider: body.provider, apiKey, model: body.model, baseUrl: body.baseUrl });
+  saveAIConfig({
+    provider: body.provider,
+    apiKey,
+    model: body.model,
+    insightModel: body.insightModel,
+    baseUrl: body.baseUrl,
+  });
   return json({ ok: true, keyHint: mask(apiKey) });
 });

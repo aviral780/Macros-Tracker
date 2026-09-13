@@ -11,6 +11,7 @@ import { MEAL_LABEL, MEALS, type CardioEntry, type FoodEntry, type Goals, type W
 import { DateNav } from "./DateNav";
 import { DaySummary } from "./DaySummary";
 import { FoodEditSheet } from "./FoodEditSheet";
+import { FoodTags } from "./FoodTags";
 import { Icon } from "./Icon";
 import { MacroLine } from "./MacroLine";
 import { MomentumCard } from "./MomentumCard";
@@ -131,6 +132,7 @@ export function TodayView() {
                             <span className="block truncate text-[13px] text-muted">
                               {[e.portion, e.grams ? `${fmt(e.grams)} g` : ""].filter(Boolean).join(" · ") || "—"}
                             </span>
+                            <FoodTags item={e} className="mt-1" />
                           </span>
                           <span className="text-right">
                             <span className="block text-[15px] font-semibold tnum">{fmt(e.calories)}</span>

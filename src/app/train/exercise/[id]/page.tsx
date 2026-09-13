@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { ExerciseCoach } from "@/components/ExerciseCoach";
 import { ExerciseProgress } from "@/components/ExerciseProgress";
 import { Icon } from "@/components/Icon";
 import { getExerciseProgress } from "@/lib/queries";
@@ -22,7 +23,10 @@ export default async function Page(props: PageProps<"/train/exercise/[id]">) {
       </Link>
       <p className="eyebrow">{data.exercise.muscle}</p>
       <h1 className="condensed mb-5 text-[34px] font-black leading-tight">{data.exercise.name}</h1>
-      <ExerciseProgress history={data.history} pr={data.pr} />
+      <div className="grid gap-5">
+        <ExerciseCoach exerciseId={data.exercise.id} />
+        <ExerciseProgress history={data.history} pr={data.pr} />
+      </div>
     </div>
   );
 }

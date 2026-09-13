@@ -9,6 +9,7 @@ const NAV: { href: string; label: string; icon: IconName; keepDate?: boolean }[]
   { href: "/", label: "Today", icon: "today", keepDate: true },
   { href: "/train", label: "Train", icon: "dumbbell", keepDate: true },
   { href: "/log", label: "Log food", icon: "camera", keepDate: true },
+  { href: "/coach", label: "Coach", icon: "spark" },
   { href: "/trends", label: "Trends", icon: "chart" },
   { href: "/goals", label: "Goals", icon: "target" },
 ];

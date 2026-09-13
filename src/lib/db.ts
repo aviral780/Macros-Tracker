@@ -101,6 +101,15 @@ CREATE TABLE IF NOT EXISTS routine_exercises (
   UNIQUE (day, exercise_id)
 );
 CREATE INDEX IF NOT EXISTS idx_routine_day ON routine_exercises(day);
+
+CREATE TABLE IF NOT EXISTS insights (
+  kind TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  model TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (kind, subject)
+);
 `;
 
 /** Columns added after the first release; existing databases get them on open. */
