@@ -1,5 +1,5 @@
 import "server-only";
-import { db } from "./db";
+import { all, get } from "./db";
 import { todayISO, weekRange } from "./dates";
 import { getCardioSummary, getPlan, nextSplitDay } from "./queries";
 
@@ -17,8 +17,7 @@ export type Snapshot = {
   cardioTarget: number;
 };
 
-const dayHasWorkout = (date: string) =>
-  !!db.prepare("SELECT 1 FROM workouts WHERE date = ? LIMIT 1").get(date);
+const dayHasWorkout = async (date: string) => !!(await get("SELECT 1 FROM workouts WHERE date = ? LIMIT 1", [date]));
 
 const diffDays = (a: string, b: string) => Math.round((Date.parse(b) - Date.parse(a)) / 86_400_000);
 
@@ -38,10 +37,8 @@ function trainingRuns(dates: string[]) {
   return runs;
 }
 
-export function streakStats(today = todayISO()) {
-  const dates = (db.prepare("SELECT DISTINCT date FROM workouts ORDER BY date").all() as { date: string }[]).map(
-    (r) => r.date,
-  );
+export async function streakStats(today = todayISO()) {
+  const dates = (await all<{ date: string }>("SELECT DISTINCT date FROM workouts ORDER BY date")).map((r) => r.date);
   const runs = trainingRuns(dates);
   const latest = runs.at(-1);
   return {
@@ -51,33 +48,34 @@ export function streakStats(today = todayISO()) {
   };
 }
 
-export function snapshot(): Snapshot {
+export async function snapshot(): Promise<Snapshot> {
   const today = todayISO();
-  const plan = getPlan();
+  const plan = await getPlan();
   const week = weekRange(today);
 
-  const lastWorkout = db.prepare("SELECT date FROM workouts ORDER BY date DESC LIMIT 1").get() as
-    | { date: string }
-    | undefined;
-  const weekWorkouts = db
-    .prepare("SELECT COUNT(DISTINCT date) AS n FROM workouts WHERE date BETWEEN ? AND ?")
-    .get(week.from, week.to) as { n: number };
-
-  const daysSinceLast = lastWorkout
-    ? Math.round((Date.parse(today) - Date.parse(lastWorkout.date)) / 86_400_000)
-    : null;
+  const [lastWorkout, weekWorkouts, trainedToday, loggedToday, cardioToday, streak, cardioWeek, nextDay] =
+    await Promise.all([
+      get<{ date: string }>("SELECT date FROM workouts ORDER BY date DESC LIMIT 1"),
+      get<{ n: number }>("SELECT COUNT(DISTINCT date) AS n FROM workouts WHERE date BETWEEN ? AND ?", [week.from, week.to]),
+      dayHasWorkout(today),
+      get("SELECT 1 FROM food_entries WHERE date = ? LIMIT 1", [today]),
+      get("SELECT 1 FROM cardio WHERE date = ? LIMIT 1", [today]),
+      streakStats(today),
+      getCardioSummary(week.from, week.to),
+      nextSplitDay(plan),
+    ]);
 
   return {
     today,
-    nextDay: nextSplitDay(plan),
-    trainedToday: dayHasWorkout(today),
-    loggedToday: !!db.prepare("SELECT 1 FROM food_entries WHERE date = ? LIMIT 1").get(today),
-    cardioToday: !!db.prepare("SELECT 1 FROM cardio WHERE date = ? LIMIT 1").get(today),
-    daysSinceLast,
-    streak: streakStats(today).current,
-    weekWorkouts: weekWorkouts.n,
+    nextDay,
+    trainedToday,
+    loggedToday: !!loggedToday,
+    cardioToday: !!cardioToday,
+    daysSinceLast: lastWorkout ? Math.round((Date.parse(today) - Date.parse(lastWorkout.date)) / 86_400_000) : null,
+    streak: streak.current,
+    weekWorkouts: weekWorkouts?.n ?? 0,
     weekTarget: plan.days.length,
-    weekCardio: getCardioSummary(week.from, week.to).days,
+    weekCardio: cardioWeek.days,
     cardioTarget: plan.cardioPerWeek,
   };
 }
@@ -144,27 +142,25 @@ export function nudge(s: Snapshot, hour = new Date().getHours()): Nudge {
 }
 
 /** Receipts for the days motivation is missing: what has already been earned. */
-export function pepTalk(s: Snapshot) {
-  const totals = db
-    .prepare(
+export async function pepTalk(s: Snapshot) {
+  const [totalsRow, best] = await Promise.all([
+    get<{ sessions: number; volume: number }>(
       `SELECT COUNT(DISTINCT w.id) AS sessions,
          COALESCE(SUM(s.weight * s.reps) FILTER (WHERE s.warmup = 0), 0) AS volume
        FROM workouts w
        LEFT JOIN workout_exercises we ON we.workout_id = w.id
        LEFT JOIN sets s ON s.workout_exercise_id = we.id`,
-    )
-    .get() as { sessions: number; volume: number };
-
-  const best = db
-    .prepare(
+    ),
+    get<{ name: string; weight: number; reps: number; date: string }>(
       `SELECT e.name, s.weight, s.reps, w.date FROM sets s
        JOIN workout_exercises we ON we.id = s.workout_exercise_id
        JOIN exercises e ON e.id = we.exercise_id
        JOIN workouts w ON w.id = we.workout_id
        WHERE s.warmup = 0 AND s.reps > 0
        ORDER BY s.weight DESC, s.reps DESC LIMIT 1`,
-    )
-    .get() as { name: string; weight: number; reps: number; date: string } | undefined;
+    ),
+  ]);
+  const totals = totalsRow ?? { sessions: 0, volume: 0 };
 
   const lines = [
     totals.sessions > 0 ? `You have logged ${totals.sessions} sessions. None of them felt convenient either.` : null,

@@ -5,9 +5,9 @@ import { handle, json } from "@/lib/http";
 
 const mask = (k: string) => (k ? `••••${k.slice(-4)}` : "");
 
-export const GET = handle(() => {
-  const cfg = getAIConfig();
-  const stored = getSetting("ai", { apiKey: "" }).apiKey;
+export const GET = handle(async () => {
+  const cfg = await getAIConfig();
+  const stored = (await getSetting("ai", { apiKey: "" })).apiKey;
   return json({
     provider: cfg.provider,
     model: cfg.model,
@@ -29,10 +29,10 @@ const Body = z.object({
 
 export const PUT = handle(async (req: Request) => {
   const body = Body.parse(await req.json());
-  const current = getSetting("ai", { provider: "gemini", apiKey: "", model: "", baseUrl: "", insightModel: "" });
+  const current = await getSetting("ai", { provider: "gemini", apiKey: "", model: "", baseUrl: "", insightModel: "" });
   // Keys are per-provider; switching provider without a new key clears the old one.
   const apiKey = body.apiKey !== undefined ? body.apiKey : current.provider === body.provider ? current.apiKey : "";
-  saveAIConfig({
+  await saveAIConfig({
     provider: body.provider,
     apiKey,
     model: body.model,

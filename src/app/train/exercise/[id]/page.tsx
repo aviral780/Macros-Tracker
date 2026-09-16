@@ -8,12 +8,12 @@ import { getExerciseProgress } from "@/lib/queries";
 export const dynamic = "force-dynamic";
 
 export async function generateMetadata(props: PageProps<"/train/exercise/[id]">) {
-  const data = getExerciseProgress(Number((await props.params).id));
+  const data = await getExerciseProgress(Number((await props.params).id));
   return { title: data?.exercise.name ?? "Exercise" };
 }
 
 export default async function Page(props: PageProps<"/train/exercise/[id]">) {
-  const data = getExerciseProgress(Number((await props.params).id));
+  const data = await getExerciseProgress(Number((await props.params).id));
   if (!data) notFound();
   return (
     <div className="animate-fade">

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { get, run } from "@/lib/db";
 import { fail, handle, json } from "@/lib/http";
 import { getWorkout } from "@/lib/queries";
 
@@ -11,16 +11,16 @@ const Body = z.object({
 
 export const POST = handle(async (req: Request, ctx: RouteContext<"/api/workout-exercises/[id]/sets">) => {
   const weId = Number((await ctx.params).id);
-  const we = db.prepare("SELECT workout_id FROM workout_exercises WHERE id = ?").get(weId) as { workout_id: number } | undefined;
+  const we = await get<{ workout_id: number }>("SELECT workout_id FROM workout_exercises WHERE id = ?", [weId]);
   if (!we) return fail("Exercise not found", 404);
   const s = Body.parse(await req.json());
-  const pos = db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM sets WHERE workout_exercise_id = ?").get(weId) as { p: number };
-  db.prepare("INSERT INTO sets (workout_exercise_id, position, weight, reps, warmup) VALUES (?, ?, ?, ?, ?)").run(
+  const pos = await get<{ p: number }>("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM sets WHERE workout_exercise_id = ?", [weId]);
+  await run("INSERT INTO sets (workout_exercise_id, position, weight, reps, warmup) VALUES (?, ?, ?, ?, ?)", [
     weId,
-    pos.p,
+    pos?.p ?? 0,
     s.weight,
     s.reps,
     s.warmup ? 1 : 0,
-  );
-  return json({ workout: getWorkout(we.workout_id) }, 201);
+  ]);
+  return json({ workout: await getWorkout(we.workout_id) }, 201);
 });

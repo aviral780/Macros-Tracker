@@ -1,11 +1,11 @@
-import Database from "better-sqlite3";
+import { createClient, type Client, type InArgs, type InStatement } from "@libsql/client";
 import fs from "node:fs";
 import path from "node:path";
 
 export const DATA_DIR = path.join(/*turbopackIgnore: true*/ process.cwd(), "data");
 export const PHOTO_DIR = path.join(DATA_DIR, "photos");
 
-/** Absolute path for a stored food photo; basename() keeps lookups inside the photo folder. */
+/** Absolute path for a locally stored food photo; basename() keeps lookups inside the folder. */
 export const photoPath = (filename: string) =>
   path.join(/*turbopackIgnore: true*/ process.cwd(), "data", "photos", path.basename(filename));
 
@@ -111,24 +111,6 @@ CREATE TABLE IF NOT EXISTS insights (
   PRIMARY KEY (kind, subject)
 );
 `;
-
-/** Columns added after the first release; existing databases get them on open. */
-const ADDED_COLUMNS: [table: string, column: string, ddl: string][] = [
-  ["workouts", "duration_min", "REAL"],
-  ["workouts", "calories", "REAL"],
-  ["workouts", "avg_hr", "REAL"],
-  ["workouts", "external_id", "TEXT"],
-];
-
-function migrate(database: Database.Database) {
-  for (const [table, column, ddl] of ADDED_COLUMNS) {
-    const cols = database.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
-    if (!cols.some((c) => c.name === column)) {
-      database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
-    }
-  }
-}
-
 const SEED_EXERCISES: [string, string][] = [
   ["Barbell bench press", "Chest"],
   ["Incline barbell bench press", "Chest"],
@@ -251,56 +233,103 @@ const SEED_ROUTINE: Record<string, string[]> = {
   ],
 };
 
-function open() {
-  fs.mkdirSync(PHOTO_DIR, { recursive: true });
-  const db = new Database(path.join(DATA_DIR, "macros.db"));
-  db.pragma("busy_timeout = 5000");
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-  db.exec(SCHEMA);
-  migrate(db);
-  seed(db);
-  return db;
-}
+/** Columns added after the first release; existing databases get them on open. */
+const ADDED_COLUMNS: [table: string, column: string, ddl: string][] = [
+  ["workouts", "duration_min", "REAL"],
+  ["workouts", "calories", "REAL"],
+  ["workouts", "avg_hr", "REAL"],
+  ["workouts", "external_id", "TEXT"],
+];
 
-function seed(database: Database.Database) {
-  // Idempotent, so exercises added in a later release land in databases that already exist.
-  const insertExercise = database.prepare("INSERT OR IGNORE INTO exercises (name, muscle) VALUES (?, ?)");
-  database.transaction(() => SEED_EXERCISES.forEach(([n, m]) => insertExercise.run(n, m)))();
-
-  const routineCount = database.prepare("SELECT COUNT(*) AS n FROM routine_exercises").get() as { n: number };
-  if (routineCount.n > 0) return;
-  const findExercise = database.prepare("SELECT id FROM exercises WHERE name = ? COLLATE NOCASE");
-  const insertRoutine = database.prepare(
-    "INSERT OR IGNORE INTO routine_exercises (day, exercise_id, position) VALUES (?, ?, ?)",
-  );
-  database.transaction(() => {
-    for (const [day, names] of Object.entries(SEED_ROUTINE)) {
-      names.forEach((name, i) => {
-        const row = findExercise.get(name) as { id: number } | undefined;
-        if (row) insertRoutine.run(day, row.id, i);
-      });
+async function migrate(c: Client) {
+  for (const [table, column, ddl] of ADDED_COLUMNS) {
+    const info = await c.execute(`PRAGMA table_info(${table})`);
+    if (!info.rows.some((r) => (r as unknown as { name: string }).name === column)) {
+      await c.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
     }
-  })();
+  }
 }
 
-// One connection, opened on first use (not at import, so builds don't touch the file)
-// and reused across hot reloads in dev.
-const globalForDb = globalThis as unknown as { __macrosDb?: Database.Database };
-const instance = () => (globalForDb.__macrosDb ??= open());
+async function seedData(c: Client) {
+  // Idempotent, so exercises added in a later release land in databases that already exist.
+  await c.batch(
+    SEED_EXERCISES.map(([name, muscle]) => ({
+      sql: "INSERT OR IGNORE INTO exercises (name, muscle) VALUES (?, ?)",
+      args: [name, muscle] as InArgs,
+    })),
+    "write",
+  );
 
-export const db = new Proxy({} as Database.Database, {
-  get(_, prop) {
-    const real = instance();
-    const value = Reflect.get(real, prop);
-    return typeof value === "function" ? value.bind(real) : value;
-  },
-});
+  const count = await c.execute("SELECT COUNT(*) AS n FROM routine_exercises");
+  if (Number((count.rows[0] as unknown as { n: number }).n) > 0) return;
 
-export function getSetting<T>(key: string, fallback: T): T {
-  const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as
-    | { value: string }
-    | undefined;
+  const statements: InStatement[] = [];
+  for (const [day, names] of Object.entries(SEED_ROUTINE)) {
+    for (const [i, name] of names.entries()) {
+      const found = await c.execute({ sql: "SELECT id FROM exercises WHERE name = ? COLLATE NOCASE", args: [name] });
+      const row = found.rows[0] as unknown as { id: number } | undefined;
+      if (row) {
+        statements.push({
+          sql: "INSERT OR IGNORE INTO routine_exercises (day, exercise_id, position) VALUES (?, ?, ?)",
+          args: [day, row.id, i],
+        });
+      }
+    }
+  }
+  if (statements.length > 0) await c.batch(statements, "write");
+}
+
+/**
+ * One client for the process, reused across hot reloads. With TURSO_DATABASE_URL set it
+ * talks to Turso; without it, to the same local SQLite file as before, so development and
+ * production run identical code.
+ */
+function createDbClient(): Client {
+  const url = process.env.TURSO_DATABASE_URL;
+  if (url) return createClient({ url, authToken: process.env.TURSO_AUTH_TOKEN });
+  fs.mkdirSync(PHOTO_DIR, { recursive: true });
+  return createClient({ url: `file:${path.join(DATA_DIR, "macros.db")}` });
+}
+
+const globalForDb = globalThis as unknown as { __macrosClient?: Client; __macrosReady?: Promise<void> };
+const client = () => (globalForDb.__macrosClient ??= createDbClient());
+
+/** Schema work runs once per process; every helper waits on it before its first query. */
+const ready = () => (globalForDb.__macrosReady ??= (async () => {
+  const c = client();
+  await c.executeMultiple(SCHEMA);
+  await migrate(c);
+  await seedData(c);
+})());
+
+export async function all<T>(sql: string, args: InArgs = []): Promise<T[]> {
+  await ready();
+  const result = await client().execute({ sql, args });
+  return result.rows as unknown as T[];
+}
+
+export async function get<T>(sql: string, args: InArgs = []): Promise<T | undefined> {
+  return (await all<T>(sql, args))[0];
+}
+
+export async function run(sql: string, args: InArgs = []) {
+  await ready();
+  const result = await client().execute({ sql, args });
+  return {
+    lastInsertRowid: result.lastInsertRowid === undefined ? 0 : Number(result.lastInsertRowid),
+    rowsAffected: result.rowsAffected,
+  };
+}
+
+/** Statements that must land together, in order. */
+export async function batch(statements: InStatement[]) {
+  if (statements.length === 0) return;
+  await ready();
+  await client().batch(statements, "write");
+}
+
+export async function getSetting<T>(key: string, fallback: T): Promise<T> {
+  const row = await get<{ value: string }>("SELECT value FROM settings WHERE key = ?", [key]);
   if (!row) return fallback;
   try {
     return { ...fallback, ...JSON.parse(row.value) };
@@ -309,8 +338,9 @@ export function getSetting<T>(key: string, fallback: T): T {
   }
 }
 
-export function setSetting(key: string, value: unknown) {
-  db.prepare(
-    "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-  ).run(key, JSON.stringify(value));
+export async function setSetting(key: string, value: unknown) {
+  await run("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [
+    key,
+    JSON.stringify(value),
+  ]);
 }

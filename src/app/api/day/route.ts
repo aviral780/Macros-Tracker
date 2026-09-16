@@ -11,20 +11,19 @@ import {
   nextSplitDay,
 } from "@/lib/queries";
 
-export const GET = handle((req: Request) => {
+export const GET = handle(async (req: Request) => {
   const param = new URL(req.url).searchParams.get("date");
   const date = isISODate(param) ? param : todayISO();
   const week = weekRange(date);
-  const plan = getPlan();
-  return json({
-    date,
-    goals: getGoals(),
-    goalsSet: hasGoals(),
-    entries: getEntries(date),
-    workouts: getWorkoutsForDate(date),
-    cardio: getCardio(date),
-    cardioWeek: getCardioSummary(week.from, week.to),
-    plan,
-    nextDay: nextSplitDay(plan),
-  });
+  const plan = await getPlan();
+  const [goals, goalsSet, entries, workouts, cardio, cardioWeek, nextDay] = await Promise.all([
+    getGoals(),
+    hasGoals(),
+    getEntries(date),
+    getWorkoutsForDate(date),
+    getCardio(date),
+    getCardioSummary(week.from, week.to),
+    nextSplitDay(plan),
+  ]);
+  return json({ date, goals, goalsSet, entries, workouts, cardio, cardioWeek, plan, nextDay });
 });

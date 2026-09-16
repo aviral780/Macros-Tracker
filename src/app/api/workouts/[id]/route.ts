@@ -1,10 +1,10 @@
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { run } from "@/lib/db";
 import { fail, handle, json } from "@/lib/http";
 import { getWorkout } from "@/lib/queries";
 
 export const GET = handle(async (_req: Request, ctx: RouteContext<"/api/workouts/[id]">) => {
-  const w = getWorkout(Number((await ctx.params).id));
+  const w = await getWorkout(Number((await ctx.params).id));
   return w ? json({ workout: w }) : fail("Workout not found", 404);
 });
 
@@ -17,13 +17,13 @@ const Patch = z.object({
 export const PATCH = handle(async (req: Request, ctx: RouteContext<"/api/workouts/[id]">) => {
   const id = Number((await ctx.params).id);
   const p = Patch.parse(await req.json());
-  if (p.name !== undefined) db.prepare("UPDATE workouts SET name = ? WHERE id = ?").run(p.name, id);
-  if (p.notes !== undefined) db.prepare("UPDATE workouts SET notes = ? WHERE id = ?").run(p.notes, id);
-  if (p.duration_min !== undefined) db.prepare("UPDATE workouts SET duration_min = ? WHERE id = ?").run(p.duration_min, id);
-  return json({ workout: getWorkout(id) });
+  if (p.name !== undefined) await run("UPDATE workouts SET name = ? WHERE id = ?", [p.name, id]);
+  if (p.notes !== undefined) await run("UPDATE workouts SET notes = ? WHERE id = ?", [p.notes, id]);
+  if (p.duration_min !== undefined) await run("UPDATE workouts SET duration_min = ? WHERE id = ?", [p.duration_min, id]);
+  return json({ workout: await getWorkout(id) });
 });
 
 export const DELETE = handle(async (_req: Request, ctx: RouteContext<"/api/workouts/[id]">) => {
-  db.prepare("DELETE FROM workouts WHERE id = ?").run(Number((await ctx.params).id));
+  await run("DELETE FROM workouts WHERE id = ?", [Number((await ctx.params).id)]);
   return json({ ok: true });
 });

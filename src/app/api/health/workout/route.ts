@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { run } from "@/lib/db";
 import { isISODate, todayISO } from "@/lib/dates";
 import { handle, json } from "@/lib/http";
 import { getCardio, getPlan, getWorkoutsForDate, nextSplitDay } from "@/lib/queries";
@@ -37,8 +37,8 @@ export const POST = handle(async (req: Request) => {
   const isCardio = STRENGTH.test(b.type) ? false : CARDIO.test(b.type) || (b.distanceKm ?? 0) > 0;
 
   if (isCardio) {
-    const plan = getPlan();
-    db.prepare(
+    const plan = await getPlan();
+    await run(
       `INSERT INTO cardio (date, kind, minutes, distance_km, calories, avg_hr, source, external_id)
        VALUES (?, ?, ?, ?, ?, ?, 'health', ?)
        ON CONFLICT(external_id) DO UPDATE SET
@@ -46,7 +46,7 @@ export const POST = handle(async (req: Request) => {
          distance_km = excluded.distance_km,
          calories = excluded.calories,
          avg_hr = excluded.avg_hr`,
-    ).run(
+      [
       date,
       b.type.trim() || plan.cardioKind,
       b.durationMin ?? 0,
@@ -54,25 +54,28 @@ export const POST = handle(async (req: Request) => {
       b.calories,
       b.avgHeartRate,
       b.externalId || null,
+      ],
     );
-    return json({ ok: true, kind: "cardio", date, cardio: getCardio(date) }, 201);
+    return json({ ok: true, kind: "cardio", date, cardio: await getCardio(date) }, 201);
   }
 
   // Strength: top up the session already logged for that day, or open one named from the rotation.
-  const existing = getWorkoutsForDate(date);
+  const existing = await getWorkoutsForDate(date);
   const target = existing.at(-1);
   const id = target
     ? target.id
-    : Number(
-        db
-          .prepare("INSERT INTO workouts (date, name, external_id) VALUES (?, ?, ?)")
-          .run(date, nextSplitDay(getPlan()), b.externalId || null).lastInsertRowid,
-      );
-  db.prepare("UPDATE workouts SET duration_min = ?, calories = ?, avg_hr = ? WHERE id = ?").run(
+    : (
+        await run("INSERT INTO workouts (date, name, external_id) VALUES (?, ?, ?)", [
+          date,
+          await nextSplitDay(await getPlan()),
+          b.externalId || null,
+        ])
+      ).lastInsertRowid;
+  await run("UPDATE workouts SET duration_min = ?, calories = ?, avg_hr = ? WHERE id = ?", [
     b.durationMin,
     b.calories,
     b.avgHeartRate,
     id,
-  );
+  ]);
   return json({ ok: true, kind: "strength", date, workoutId: id, created: !target }, 201);
 });

@@ -12,7 +12,6 @@ const nextConfig: NextConfig = {
   outputFileTracingRoot: process.cwd(),
   turbopack: { root: process.cwd() },
   allowedDevOrigins: lanHosts,
-  serverExternalPackages: ["better-sqlite3"],
   // The badge sits bottom-left, directly on top of the Settings nav item.
   // Compile and runtime errors still surface without it.
   devIndicators: false,

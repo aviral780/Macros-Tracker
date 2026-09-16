@@ -51,8 +51,8 @@ export type AIConfig = { provider: AIProvider; apiKey: string; model: string; ba
 
 const DEFAULT_CONFIG: AIConfig = { provider: "gemini", apiKey: "", model: "", baseUrl: "", insightModel: "" };
 
-export function getAIConfig(): AIConfig {
-  const cfg = getSetting<AIConfig>("ai", DEFAULT_CONFIG);
+export async function getAIConfig(): Promise<AIConfig> {
+  const cfg = await getSetting<AIConfig>("ai", DEFAULT_CONFIG);
   // Environment variables work as a fallback so the key can live in .env.local instead.
   if (!cfg.apiKey) {
     const env: Partial<Record<AIProvider, string | undefined>> = {
@@ -66,7 +66,7 @@ export function getAIConfig(): AIConfig {
 }
 
 export function saveAIConfig(cfg: AIConfig) {
-  setSetting("ai", cfg);
+  return setSetting("ai", cfg);
 }
 
 function endpoint(cfg: AIConfig) {
@@ -154,7 +154,7 @@ async function resolveModel(cfg: AIConfig) {
   try {
     const [best] = await listModels(cfg);
     if (best) {
-      saveAIConfig({ ...getSetting<AIConfig>("ai", DEFAULT_CONFIG), model: best });
+      await saveAIConfig({ ...(await getSetting<AIConfig>("ai", DEFAULT_CONFIG)), model: best });
       return best;
     }
   } catch {}
@@ -175,7 +175,7 @@ async function resolveInsightModel(cfg: AIConfig) {
   try {
     const [best] = rankInsightModels(cfg.provider, await rawModels(cfg));
     if (best) {
-      saveAIConfig({ ...getSetting<AIConfig>("ai", DEFAULT_CONFIG), insightModel: best });
+      await saveAIConfig({ ...(await getSetting<AIConfig>("ai", DEFAULT_CONFIG)), insightModel: best });
       return best;
     }
   } catch {}
@@ -366,7 +366,7 @@ export async function askJSON<T>(opts: {
   schema: z.ZodType<T>;
   maxTokens?: number;
 }): Promise<{ data: T; model: string }> {
-  const cfg = getAIConfig();
+  const cfg = await getAIConfig();
   requireKey(cfg);
   return withFallback(
     cfg,
@@ -380,7 +380,7 @@ export async function askJSON<T>(opts: {
 type AnalysisInput = { imageDataUrl?: string; text?: string };
 
 export async function analyzeFood(input: AnalysisInput): Promise<Analysis & { model: string }> {
-  const cfg = getAIConfig();
+  const cfg = await getAIConfig();
   requireKey(cfg);
 
   const userText = input.imageDataUrl

@@ -1,10 +1,9 @@
-import fs from "node:fs";
-import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { analyzeFood } from "@/lib/ai";
-import { db, photoPath } from "@/lib/db";
+import { get, run } from "@/lib/db";
 import { fail, handle, json } from "@/lib/http";
+import { readPhoto, savePhoto } from "@/lib/photos";
 
 const Body = z.object({
   image: z.string().startsWith("data:image/").optional(),
@@ -21,11 +20,11 @@ export const POST = handle(async (req: Request) => {
   let photoId: string | null = null;
   let image = body.image;
   if (!image && body.photoId) {
-    const row = db.prepare("SELECT filename FROM photos WHERE id = ?").get(body.photoId) as { filename: string } | undefined;
+    const row = await get<{ filename: string }>("SELECT filename FROM photos WHERE id = ?", [body.photoId]);
     if (!row) return fail("That photo is no longer available. Add it again.", 404);
-    const ext = path.extname(row.filename).slice(1);
-    const buf = fs.readFileSync(photoPath(row.filename));
-    image = `data:image/${ext === "jpg" ? "jpeg" : ext};base64,${buf.toString("base64")}`;
+    const stored = await readPhoto(row.filename);
+    if (!stored) return fail("That photo is no longer available. Add it again.", 404);
+    image = `data:${stored.contentType};base64,${stored.body.toString("base64")}`;
     photoId = body.photoId;
   } else if (body.image) {
     const m = body.image.match(/^data:image\/(jpeg|png|webp);base64,(.+)$/);
@@ -33,9 +32,8 @@ export const POST = handle(async (req: Request) => {
     const buf = Buffer.from(m[2], "base64");
     if (buf.length > 8 * 1024 * 1024) return fail("Photo is larger than 8 MB");
     photoId = randomUUID();
-    const filename = `${photoId}.${m[1] === "jpeg" ? "jpg" : m[1]}`;
-    fs.writeFileSync(photoPath(filename), buf);
-    db.prepare("INSERT INTO photos (id, filename) VALUES (?, ?)").run(photoId, filename);
+    const ref = await savePhoto(photoId, m[1] === "jpeg" ? "jpg" : m[1], buf);
+    await run("INSERT INTO photos (id, filename) VALUES (?, ?)", [photoId, ref]);
   }
 
   const analysis = await analyzeFood({ imageDataUrl: image, text });

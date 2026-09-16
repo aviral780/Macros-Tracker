@@ -1,15 +1,16 @@
 import "server-only";
 import { z } from "zod";
 import { askJSON } from "./ai";
-import { db } from "./db";
+import { all, get, run } from "./db";
 import { getGoals, getPlan } from "./queries";
 
 type Cached<T> = { payload: T; model: string; created_at: string };
 
-function readCache<T>(kind: string, subject: string, maxAgeDays?: number): Cached<T> | null {
-  const row = db
-    .prepare("SELECT payload, model, created_at FROM insights WHERE kind = ? AND subject = ?")
-    .get(kind, subject.toLowerCase()) as { payload: string; model: string; created_at: string } | undefined;
+async function readCache<T>(kind: string, subject: string, maxAgeDays?: number): Promise<Cached<T> | null> {
+  const row = await get<{ payload: string; model: string; created_at: string }>(
+    "SELECT payload, model, created_at FROM insights WHERE kind = ? AND subject = ?",
+    [kind, subject.toLowerCase()],
+  );
   if (!row) return null;
   if (maxAgeDays !== undefined) {
     const age = (Date.now() - Date.parse(row.created_at + "Z")) / 86_400_000;
@@ -23,10 +24,11 @@ function readCache<T>(kind: string, subject: string, maxAgeDays?: number): Cache
 }
 
 function writeCache(kind: string, subject: string, payload: unknown, model: string) {
-  db.prepare(
+  return run(
     `INSERT INTO insights (kind, subject, payload, model, created_at) VALUES (?, ?, ?, ?, datetime('now'))
      ON CONFLICT(kind, subject) DO UPDATE SET payload = excluded.payload, model = excluded.model, created_at = excluded.created_at`,
-  ).run(kind, subject.toLowerCase(), JSON.stringify(payload), model);
+    [kind, subject.toLowerCase(), JSON.stringify(payload), model],
+  );
 }
 
 const list = (max: number) => z.array(z.string()).catch([]).transform((a) => a.slice(0, max));
@@ -58,21 +60,21 @@ Respond with JSON only:
 {"primary":["..."],"secondary":["..."],"summary":"...","cues":["..."],"alternatives":[{"name":"...","why":"..."}]}`;
 
 export async function exerciseInsight(exerciseId: number) {
-  const ex = db.prepare("SELECT id, name, muscle FROM exercises WHERE id = ?").get(exerciseId) as
-    | { id: number; name: string; muscle: string }
-    | undefined;
+  const ex = await get<{ id: number; name: string; muscle: string }>("SELECT id, name, muscle FROM exercises WHERE id = ?", [
+    exerciseId,
+  ]);
   if (!ex) return null;
 
   const key = `${ex.id}`;
-  const hit = readCache<ExerciseInsight>("exercise", key);
+  const hit = await readCache<ExerciseInsight>("exercise", key);
   if (hit) return { exercise: ex, ...hit };
 
   const { data, model } = await askJSON({
     system: EXERCISE_SYSTEM,
-    user: `Exercise: ${ex.name}\nLogged muscle group: ${ex.muscle}\nThe lifter trains six days a week on this split: ${getPlan().days.join(", ")}. Suggest alternatives that fit those days.`,
+    user: `Exercise: ${ex.name}\nLogged muscle group: ${ex.muscle}\nThe lifter trains six days a week on this split: ${(await getPlan()).days.join(", ")}. Suggest alternatives that fit those days.`,
     schema: ExerciseInsightSchema,
   });
-  writeCache("exercise", key, data, model);
+  await writeCache("exercise", key, data, model);
   return { exercise: ex, payload: data, model, created_at: new Date().toISOString() };
 }
 
@@ -99,7 +101,7 @@ Respond with JSON only:
 {"verdict":"...","headline":"...","why":"...","swap":null}`;
 
 export async function foodInsight(name: string, macros: { calories: number; protein: number; carbs: number; fat: number; fiber: number; grams?: number | null }) {
-  const hit = readCache<FoodInsight>("food", name);
+  const hit = await readCache<FoodInsight>("food", name);
   if (hit) return { name, ...hit };
 
   const per = macros.grams ? ` for ${Math.round(macros.grams)} g` : "";
@@ -109,7 +111,7 @@ export async function foodInsight(name: string, macros: { calories: number; prot
     schema: FoodInsightSchema,
     maxTokens: 600,
   });
-  writeCache("food", name, data, model);
+  await writeCache("food", name, data, model);
   return { name, payload: data, model, created_at: new Date().toISOString() };
 }
 
@@ -117,18 +119,7 @@ export async function foodInsight(name: string, macros: { calories: number; prot
 
 /** What they actually eat, most repeated first — the raw material for taste and planning. */
 export function foodHistory(limit = 50) {
-  return db
-    .prepare(
-      `SELECT name, COUNT(*) AS times,
-         ROUND(AVG(calories)) AS calories, ROUND(AVG(protein)) AS protein,
-         ROUND(AVG(carbs)) AS carbs, ROUND(AVG(fat)) AS fat, ROUND(AVG(fiber)) AS fiber,
-         MAX(date) AS last_eaten
-       FROM food_entries
-       GROUP BY lower(name)
-       ORDER BY times DESC, MAX(id) DESC
-       LIMIT ?`,
-    )
-    .all(limit) as {
+  return all<{
     name: string;
     times: number;
     calories: number;
@@ -137,12 +128,22 @@ export function foodHistory(limit = 50) {
     fat: number;
     fiber: number;
     last_eaten: string;
-  }[];
+  }>(
+      `SELECT name, COUNT(*) AS times,
+         ROUND(AVG(calories)) AS calories, ROUND(AVG(protein)) AS protein,
+         ROUND(AVG(carbs)) AS carbs, ROUND(AVG(fat)) AS fat, ROUND(AVG(fiber)) AS fiber,
+         MAX(date) AS last_eaten
+       FROM food_entries
+       GROUP BY lower(name)
+       ORDER BY times DESC, MAX(id) DESC
+       LIMIT ?`,
+    [limit],
+  );
 }
 
-export function loggingDays() {
-  const row = db.prepare("SELECT COUNT(DISTINCT date) AS n FROM food_entries").get() as { n: number };
-  return row.n;
+export async function loggingDays() {
+  const row = await get<{ n: number }>("SELECT COUNT(DISTINCT date) AS n FROM food_entries");
+  return row?.n ?? 0;
 }
 
 const TasteSchema = z.object({
@@ -178,18 +179,17 @@ Respond with JSON only:
 {"summary":"...","likes":["..."],"strengths":["..."],"gaps":["..."],"suggestions":[{"name":"...","why":"...","calories":0,"protein":0}]}`;
 
 export async function tasteProfile(force = false) {
-  const history = foodHistory();
-  const days = loggingDays();
+  const [history, days] = await Promise.all([foodHistory(), loggingDays()]);
   if (history.length < 5) {
     return { ready: false as const, days, needed: 5, entries: history.length };
   }
 
   if (!force) {
-    const hit = readCache<TasteProfile>("taste", "me", 7);
+    const hit = await readCache<TasteProfile>("taste", "me", 7);
     if (hit) return { ready: true as const, days, ...hit };
   }
 
-  const goals = getGoals();
+  const goals = await getGoals();
   const lines = history
     .map((f) => `${f.name} — eaten ${f.times}x, ${f.calories} kcal, ${f.protein} g protein, ${f.carbs} g carbs, ${f.fat} g fat, ${f.fiber} g fibre`)
     .join("\n");
@@ -200,7 +200,7 @@ export async function tasteProfile(force = false) {
     schema: TasteSchema,
     maxTokens: 1600,
   });
-  writeCache("taste", "me", data, model);
+  await writeCache("taste", "me", data, model);
   return { ready: true as const, days, payload: data, model, created_at: new Date().toISOString() };
 }
 
@@ -336,14 +336,14 @@ Respond with JSON only:
 {"summary":"...","meals":[{"meal":"Breakfast","items":[{"name":"...","portion":"...","calories":0,"protein":0,"carbs":0,"fat":0}]}],"totals":{"calories":0,"protein":0,"carbs":0,"fat":0}}`;
 
 export async function dayPlan(force = false) {
-  const history = foodHistory(40);
+  const history = await foodHistory(40);
   if (history.length < 5) return { ready: false as const, entries: history.length, needed: 5 };
 
-  const goals = getGoals();
+  const goals = await getGoals();
   const target = { calories: goals.calories, protein: goals.protein };
 
   if (!force) {
-    const hit = readCache<DayPlan>("dayplan", "me", 3);
+    const hit = await readCache<DayPlan>("dayplan", "me", 3);
     if (hit) return { ready: true as const, target, ...hit };
   }
 
@@ -369,7 +369,7 @@ export async function dayPlan(force = false) {
   // One model pass for the food choices, then arithmetic we control for the portions.
   const balanced = balancePortions(data, goals);
   const payload: DayPlan = balanced;
-  writeCache("dayplan", "me", payload, model);
+  await writeCache("dayplan", "me", payload, model);
   return {
     ready: true as const,
     payload,

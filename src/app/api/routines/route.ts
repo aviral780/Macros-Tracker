@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { get, run } from "@/lib/db";
 import { handle, json } from "@/lib/http";
 import { getPlan, getRoutine, getRoutines } from "@/lib/queries";
 
-export const GET = handle(() => json({ routines: getRoutines(getPlan()) }));
+export const GET = handle(async () => json({ routines: await getRoutines(await getPlan()) }));
 
 const Body = z.intersection(
   z.object({ day: z.string().trim().min(1).max(60) }),
@@ -19,23 +19,20 @@ export const POST = handle(async (req: Request) => {
   if ("exerciseId" in body) {
     exerciseId = body.exerciseId;
   } else {
-    const existing = db.prepare("SELECT id FROM exercises WHERE name = ? COLLATE NOCASE").get(body.name) as
-      | { id: number }
-      | undefined;
+    const existing = await get<{ id: number }>("SELECT id FROM exercises WHERE name = ? COLLATE NOCASE", [body.name]);
     exerciseId =
       existing?.id ??
-      Number(
-        db.prepare("INSERT INTO exercises (name, muscle, custom) VALUES (?, ?, 1)").run(body.name, body.muscle)
-          .lastInsertRowid,
-      );
+      (await run("INSERT INTO exercises (name, muscle, custom) VALUES (?, ?, 1)", [body.name, body.muscle]))
+        .lastInsertRowid;
   }
-  const pos = db
-    .prepare("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM routine_exercises WHERE day = ? COLLATE NOCASE")
-    .get(body.day) as { p: number };
-  db.prepare("INSERT OR IGNORE INTO routine_exercises (day, exercise_id, position) VALUES (?, ?, ?)").run(
+  const pos = await get<{ p: number }>(
+    "SELECT COALESCE(MAX(position), -1) + 1 AS p FROM routine_exercises WHERE day = ? COLLATE NOCASE",
+    [body.day],
+  );
+  await run("INSERT OR IGNORE INTO routine_exercises (day, exercise_id, position) VALUES (?, ?, ?)", [
     body.day,
     exerciseId,
-    pos.p,
-  );
-  return json({ day: body.day, exercises: getRoutine(body.day) }, 201);
+    pos?.p ?? 0,
+  ]);
+  return json({ day: body.day, exercises: await getRoutine(body.day) }, 201);
 });

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { db, setSetting } from "@/lib/db";
+import { run, setSetting } from "@/lib/db";
 import { todayISO } from "@/lib/dates";
 import { handle, json } from "@/lib/http";
 import { getGoals, getProfile, hasGoals } from "@/lib/queries";
@@ -24,16 +24,19 @@ const Goals = z.object({
   source: z.enum(["calculated", "manual"]),
 });
 
-export const GET = handle(() => json({ profile: getProfile(), goals: getGoals(), goalsSet: hasGoals() }));
+export const GET = handle(async () => {
+  const [profile, goals, goalsSet] = await Promise.all([getProfile(), getGoals(), hasGoals()]);
+  return json({ profile, goals, goalsSet });
+});
 
 export const PUT = handle(async (req: Request) => {
   const body = z.object({ profile: Profile, goals: Goals }).parse(await req.json());
-  setSetting("profile", body.profile);
-  setSetting("goals", body.goals);
+  await setSetting("profile", body.profile);
+  await setSetting("goals", body.goals);
   // Keep the body-weight log in step with the profile.
-  db.prepare("INSERT INTO body_weight (date, kg) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET kg = excluded.kg").run(
+  await run("INSERT INTO body_weight (date, kg) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET kg = excluded.kg", [
     todayISO(),
     body.profile.weightKg,
-  );
+  ]);
   return json({ ok: true });
 });

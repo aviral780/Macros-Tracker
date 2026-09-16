@@ -1,19 +1,16 @@
-import fs from "node:fs";
-import path from "node:path";
-import { db, photoPath } from "@/lib/db";
+import { get } from "@/lib/db";
 import { fail, handle } from "@/lib/http";
-
-const TYPES: Record<string, string> = { jpg: "image/jpeg", png: "image/png", webp: "image/webp" };
+import { readPhoto } from "@/lib/photos";
 
 export const GET = handle(async (_req: Request, ctx: RouteContext<"/api/photos/[id]">) => {
   const { id } = await ctx.params;
-  const row = db.prepare("SELECT filename FROM photos WHERE id = ?").get(id) as { filename: string } | undefined;
+  const row = await get<{ filename: string }>("SELECT filename FROM photos WHERE id = ?", [id]);
   if (!row) return fail("Photo not found", 404);
-  const file = photoPath(row.filename);
-  if (!fs.existsSync(file)) return fail("Photo not found", 404);
-  return new Response(fs.readFileSync(file), {
+  const photo = await readPhoto(row.filename);
+  if (!photo) return fail("Photo not found", 404);
+  return new Response(new Uint8Array(photo.body), {
     headers: {
-      "Content-Type": TYPES[path.extname(file).slice(1)] ?? "application/octet-stream",
+      "Content-Type": photo.contentType,
       "Cache-Control": "private, max-age=31536000, immutable",
     },
   });

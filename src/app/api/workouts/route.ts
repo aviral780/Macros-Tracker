@@ -1,19 +1,21 @@
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { all, run } from "@/lib/db";
 import { handle, json } from "@/lib/http";
 import { getPlan, getWorkout, getWorkoutHistory, nextSplitDay } from "@/lib/queries";
 import { ISODate } from "@/lib/schemas";
 
-export const GET = handle(() => {
-  const templates = db
-    .prepare(
+export const GET = handle(async () => {
+  const plan = await getPlan();
+  const [templates, history, nextDay] = await Promise.all([
+    all<{ name: string; id: number }>(
       `SELECT w.name, MAX(w.id) AS id FROM workouts w
        WHERE EXISTS (SELECT 1 FROM workout_exercises we WHERE we.workout_id = w.id)
        GROUP BY lower(w.name) ORDER BY MAX(w.date) DESC LIMIT 8`,
-    )
-    .all() as { name: string; id: number }[];
-  const plan = getPlan();
-  return json({ history: getWorkoutHistory(40), templates, plan, nextDay: nextSplitDay(plan) });
+    ),
+    getWorkoutHistory(40),
+    nextSplitDay(plan),
+  ]);
+  return json({ history, templates, plan, nextDay });
 });
 
 const Body = z.object({
@@ -26,22 +28,21 @@ const Body = z.object({
 
 export const POST = handle(async (req: Request) => {
   const body = Body.parse(await req.json());
-  const id = db.transaction(() => {
-    const wid = Number(
-      db.prepare("INSERT INTO workouts (date, name) VALUES (?, ?)").run(body.date, body.name).lastInsertRowid,
+  const created = await run("INSERT INTO workouts (date, name) VALUES (?, ?)", [body.date, body.name]);
+  const wid = created.lastInsertRowid;
+
+  if (body.copyFrom) {
+    await run(
+      `INSERT INTO workout_exercises (workout_id, exercise_id, position)
+       SELECT ?, exercise_id, position FROM workout_exercises WHERE workout_id = ? ORDER BY position, id`,
+      [wid, body.copyFrom],
     );
-    if (body.copyFrom) {
-      db.prepare(
-        `INSERT INTO workout_exercises (workout_id, exercise_id, position)
-         SELECT ?, exercise_id, position FROM workout_exercises WHERE workout_id = ? ORDER BY position, id`,
-      ).run(wid, body.copyFrom);
-    } else if (body.routineDay) {
-      db.prepare(
-        `INSERT INTO workout_exercises (workout_id, exercise_id, position)
-         SELECT ?, exercise_id, position FROM routine_exercises WHERE day = ? COLLATE NOCASE ORDER BY position, id`,
-      ).run(wid, body.routineDay);
-    }
-    return wid;
-  })();
-  return json({ workout: getWorkout(id) }, 201);
+  } else if (body.routineDay) {
+    await run(
+      `INSERT INTO workout_exercises (workout_id, exercise_id, position)
+       SELECT ?, exercise_id, position FROM routine_exercises WHERE day = ? COLLATE NOCASE ORDER BY position, id`,
+      [wid, body.routineDay],
+    );
+  }
+  return json({ workout: await getWorkout(wid) }, 201);
 });
