@@ -4,6 +4,7 @@ import { useState } from "react";
 import { api, useData } from "@/lib/client";
 import type { AIProvider } from "@/lib/types";
 import { Icon } from "./Icon";
+import { NotificationSettings } from "./NotificationSettings";
 import { useToast } from "./Toast";
 
 type ProviderInfo = { label: string; needsKey: boolean; keyUrl?: string; fallbackModel: string; note: string; baseUrl: string };
@@ -222,6 +223,8 @@ function SettingsForm({ data, reload, lanUrls }: { data: Resp; reload: () => Pro
           </p>
         ) : null}
       </section>
+
+      <NotificationSettings />
 
       <section className="panel mt-5 p-5">
         <h2 className="semi-condensed text-[20px] font-bold">Use on your phone</h2>

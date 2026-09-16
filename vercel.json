@@ -1,0 +1,7 @@
+{
+  "crons": [
+    { "path": "/api/push/send?slot=breakfast&hour=8", "schedule": "30 2 * * *" },
+    { "path": "/api/push/send?slot=lunch&hour=13", "schedule": "30 7 * * *" },
+    { "path": "/api/push/send?slot=dinner&hour=20", "schedule": "30 14 * * *" }
+  ]
+}
