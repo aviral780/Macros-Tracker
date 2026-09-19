@@ -14,6 +14,11 @@ const NAV: { href: string; label: string; icon: IconName; keepDate?: boolean }[]
   { href: "/goals", label: "Goals", icon: "target" },
 ];
 
+const SETTINGS = { href: "/settings", label: "Settings", icon: "settings" as IconName };
+
+/** The sidebar keeps Settings pinned to the bottom; on a phone it has to live in the bar. */
+const MOBILE_NAV = [...NAV, SETTINGS];
+
 function useHref() {
   const params = useSearchParams();
   const date = params.get("date");
@@ -56,14 +61,14 @@ function SideNav() {
       </ul>
       <div className="mt-auto">
         <Link
-          href="/settings"
-          aria-current={pathname.startsWith("/settings") ? "page" : undefined}
+          href={SETTINGS.href}
+          aria-current={pathname.startsWith(SETTINGS.href) ? "page" : undefined}
           className={`flex h-11 items-center gap-3 rounded-[10px] px-3 text-[15px] font-semibold ${
-            pathname.startsWith("/settings") ? "bg-ink text-panel" : "text-ink-2 hover:bg-panel-2 hover:text-ink"
+            pathname.startsWith(SETTINGS.href) ? "bg-ink text-panel" : "text-ink-2 hover:bg-panel-2 hover:text-ink"
           }`}
         >
-          <Icon name="settings" />
-          Settings
+          <Icon name={SETTINGS.icon} />
+          {SETTINGS.label}
         </Link>
       </div>
     </nav>
@@ -79,27 +84,27 @@ function BottomNav() {
       className="md:hidden fixed inset-x-0 bottom-0 z-40 border-t border-line bg-panel/95 backdrop-blur-md"
       style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
     >
-      <ul className="mx-auto grid max-w-lg grid-cols-5">
-        {NAV.map((item) => {
+      <ul className="mx-auto grid max-w-lg grid-cols-7">
+        {MOBILE_NAV.map((item) => {
           const active = isActive(pathname, item.href);
           const isLog = item.href === "/log";
           return (
-            <li key={item.href}>
+            <li key={item.href} className="min-w-0">
               <Link
                 href={hrefFor(item)}
                 aria-current={active ? "page" : undefined}
-                className={`flex h-16 flex-col items-center justify-center gap-1 text-[11px] font-semibold ${
+                className={`flex h-[62px] flex-col items-center justify-center gap-1 px-0.5 text-[10px] font-semibold leading-none tracking-tight ${
                   active ? "text-ink" : "text-muted"
                 }`}
               >
                 {isLog ? (
-                  <span className="-mt-1 grid h-10 w-10 place-items-center rounded-full bg-ink text-panel shadow-[var(--shadow)]">
-                    <Icon name="camera" size={20} />
+                  <span className="-mt-0.5 grid h-9 w-9 place-items-center rounded-full bg-ink text-panel shadow-[var(--shadow)]">
+                    <Icon name="camera" size={18} />
                   </span>
                 ) : (
-                  <Icon name={item.icon} size={22} strokeWidth={active ? 2.2 : 1.8} />
+                  <Icon name={item.icon} size={20} strokeWidth={active ? 2.2 : 1.8} />
                 )}
-                <span className={isLog ? "sr-only" : ""}>{item.label}</span>
+                <span className={isLog ? "sr-only" : "block w-full truncate text-center"}>{item.label}</span>
               </Link>
             </li>
           );
