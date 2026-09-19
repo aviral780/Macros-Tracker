@@ -12,6 +12,7 @@ import { DateNav } from "./DateNav";
 import { DaySummary } from "./DaySummary";
 import { FoodEditSheet } from "./FoodEditSheet";
 import { FoodTags } from "./FoodTags";
+import { HealthCard, type Budget, type DailyMetrics } from "./HealthCard";
 import { Icon } from "./Icon";
 import { MacroLine } from "./MacroLine";
 import { MomentumCard } from "./MomentumCard";
@@ -24,6 +25,8 @@ type Day = {
   workouts: Workout[];
   cardio: CardioEntry[];
   nextDay: string;
+  metrics: DailyMetrics | null;
+  budget: Budget | null;
 };
 
 export function TodayView() {
@@ -31,6 +34,7 @@ export function TodayView() {
   const { data, loading, error, reload } = useData<Day>(`/api/day?date=${date}`);
   const [editing, setEditing] = useState<FoodEntry | null>(null);
 
+  const onDay = data?.date === date ? data : null;
   const entries = data?.date === date ? data.entries : [];
   const totals = sumMacros(entries);
   const fiber = entries.reduce((s, e) => s + e.fiber, 0);
@@ -94,6 +98,14 @@ export function TodayView() {
 
         <div className="grid gap-4">
           {isToday && <MomentumCard />}
+          {onDay?.metrics && (
+            <HealthCard
+              metrics={onDay.metrics}
+              budget={onDay.budget}
+              goalCalories={goals.calories}
+              eaten={totals.calories}
+            />
+          )}
           {MEALS.map((meal) => {
             const items = entries.filter((e) => e.meal === meal);
             const t = sumMacros(items);

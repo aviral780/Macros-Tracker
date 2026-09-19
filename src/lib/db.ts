@@ -102,6 +102,20 @@ CREATE TABLE IF NOT EXISTS routine_exercises (
 );
 CREATE INDEX IF NOT EXISTS idx_routine_day ON routine_exercises(day);
 
+CREATE TABLE IF NOT EXISTS daily_metrics (
+  date TEXT PRIMARY KEY,
+  steps REAL,
+  active_energy REAL,
+  resting_energy REAL,
+  exercise_minutes REAL,
+  stand_hours REAL,
+  resting_hr REAL,
+  hrv REAL,
+  sleep_hours REAL,
+  weight_kg REAL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS push_subscriptions (
   endpoint TEXT PRIMARY KEY,
   p256dh TEXT NOT NULL,

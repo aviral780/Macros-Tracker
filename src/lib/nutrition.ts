@@ -48,6 +48,32 @@ export function calculateGoals(p: Profile): Macros & { bmr: number; tdee: number
   return { calories, protein, carbs, fat, bmr: Math.round(bmr(p)), tdee: Math.round(maintenance) };
 }
 
+/**
+ * The day's real budget, from what the watch actually measured.
+ *
+ * Apple splits a day into resting and active burn, and the two together are the
+ * measured TDEE. The profile's activity multiplier is a different thing entirely:
+ * an estimate that already assumes a week of training. Adding active energy on top
+ * of it would count every session twice, so this replaces that estimate rather than
+ * adjusting it.
+ */
+export function measuredBudget(
+  p: Profile,
+  measured: { restingEnergy: number | null; activeEnergy: number | null },
+) {
+  if (measured.activeEnergy === null) return null;
+  const resting = measured.restingEnergy ?? bmr(p);
+  const total = resting + measured.activeEnergy;
+  const factor = p.goal === "cut" ? 1 - p.rate : p.goal === "bulk" ? 1 + p.rate : 1;
+  return {
+    calories: Math.round((total * factor) / 10) * 10,
+    tdee: Math.round(total),
+    resting: Math.round(resting),
+    active: Math.round(measured.activeEnergy),
+    estimatedResting: measured.restingEnergy === null,
+  };
+}
+
 export function sumMacros<T extends Macros>(rows: T[]): Macros {
   return rows.reduce(
     (acc, r) => ({

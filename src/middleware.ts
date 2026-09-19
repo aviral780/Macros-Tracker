@@ -1,8 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE, authConfigured, tokenMatches, verifySession } from "@/lib/auth";
 
-/** Endpoints reachable with a token header, for iOS Shortcuts and the notification cron. */
-const MACHINE_PATHS = ["/api/health/workout", "/api/nudge", "/api/push/send"];
+/** Endpoints reachable with a token header, for iOS Shortcuts, Health Auto Export and the cron. */
+const MACHINE_PATHS = ["/api/health", "/api/nudge", "/api/push/send"];
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;

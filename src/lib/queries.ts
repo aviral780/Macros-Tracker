@@ -219,3 +219,39 @@ export function getRoutine(day: string) {
 export async function getRoutines(plan: TrainingPlan) {
   return Promise.all(plan.days.map(async (day) => ({ day, exercises: await getRoutine(day) })));
 }
+
+export type DailyMetrics = {
+  date: string;
+  steps: number | null;
+  active_energy: number | null;
+  resting_energy: number | null;
+  exercise_minutes: number | null;
+  stand_hours: number | null;
+  resting_hr: number | null;
+  hrv: number | null;
+  sleep_hours: number | null;
+  weight_kg: number | null;
+};
+
+export function getDailyMetrics(date: string) {
+  return get<DailyMetrics>("SELECT * FROM daily_metrics WHERE date = ?", [date]);
+}
+
+/** Median resting HR and HRV over the fortnight before a date, as a recovery baseline. */
+export async function recoveryBaseline(date: string) {
+  const rows = await all<{ resting_hr: number | null; hrv: number | null }>(
+    `SELECT resting_hr, hrv FROM daily_metrics
+     WHERE date < ? AND date >= date(?, '-14 day') AND (resting_hr IS NOT NULL OR hrv IS NOT NULL)`,
+    [date, date],
+  );
+  const median = (values: number[]) => {
+    if (values.length === 0) return null;
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  };
+  return {
+    restingHr: median(rows.map((r) => r.resting_hr).filter((v): v is number => v !== null)),
+    hrv: median(rows.map((r) => r.hrv).filter((v): v is number => v !== null)),
+    days: rows.length,
+  };
+}

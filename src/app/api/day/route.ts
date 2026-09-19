@@ -1,11 +1,14 @@
 import { isISODate, todayISO, weekRange } from "@/lib/dates";
 import { handle, json } from "@/lib/http";
+import { measuredBudget } from "@/lib/nutrition";
 import {
   getCardio,
   getCardioSummary,
+  getDailyMetrics,
   getEntries,
   getGoals,
   getPlan,
+  getProfile,
   getWorkoutsForDate,
   hasGoals,
   nextSplitDay,
@@ -16,7 +19,7 @@ export const GET = handle(async (req: Request) => {
   const date = isISODate(param) ? param : todayISO();
   const week = weekRange(date);
   const plan = await getPlan();
-  const [goals, goalsSet, entries, workouts, cardio, cardioWeek, nextDay] = await Promise.all([
+  const [goals, goalsSet, entries, workouts, cardio, cardioWeek, nextDay, metrics, profile] = await Promise.all([
     getGoals(),
     hasGoals(),
     getEntries(date),
@@ -24,6 +27,13 @@ export const GET = handle(async (req: Request) => {
     getCardio(date),
     getCardioSummary(week.from, week.to),
     nextSplitDay(plan),
+    getDailyMetrics(date),
+    getProfile(),
   ]);
-  return json({ date, goals, goalsSet, entries, workouts, cardio, cardioWeek, plan, nextDay });
+
+  const budget = metrics
+    ? measuredBudget(profile, { restingEnergy: metrics.resting_energy, activeEnergy: metrics.active_energy })
+    : null;
+
+  return json({ date, goals, goalsSet, entries, workouts, cardio, cardioWeek, plan, nextDay, metrics: metrics ?? null, budget });
 });
