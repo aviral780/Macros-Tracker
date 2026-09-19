@@ -9,11 +9,22 @@ export type PushSubscriptionRow = {
   auth: string;
 };
 
+/**
+ * VAPID wants a contact URL, not a bare address, and pasting a plain email is the
+ * easy mistake — web-push then rejects every send with "not a valid URL".
+ */
+function vapidSubject() {
+  const raw = (process.env.VAPID_SUBJECT ?? "").trim();
+  if (!raw) return "mailto:macros@example.com";
+  if (/^(mailto:|https?:\/\/)/i.test(raw)) return raw;
+  return raw.includes("@") ? `mailto:${raw}` : `https://${raw}`;
+}
+
 function configured() {
   const publicKey = process.env.VAPID_PUBLIC_KEY;
   const privateKey = process.env.VAPID_PRIVATE_KEY;
   if (!publicKey || !privateKey) return false;
-  webpush.setVapidDetails(process.env.VAPID_SUBJECT || "mailto:macros@example.com", publicKey, privateKey);
+  webpush.setVapidDetails(vapidSubject(), publicKey, privateKey);
   return true;
 }
 
