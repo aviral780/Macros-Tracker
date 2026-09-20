@@ -16,6 +16,13 @@ type Taste = {
   payload?: { summary: string; likes: string[]; strengths: string[]; gaps: string[]; suggestions: Suggestion[] };
 };
 type PlanItem = { name: string; portion: string; calories: number; protein: number; carbs: number; fat: number };
+type Training = {
+  ready: boolean;
+  sessions?: number;
+  needed?: number;
+  model?: string;
+  payload?: { summary: string; effort: string; recovery: string; observations: string[]; adjust: string[] };
+};
 type Plan = {
   ready: boolean;
   entries?: number;
@@ -33,14 +40,15 @@ export function CoachView() {
   const toast = useToast();
   const taste = useData<Taste>("/api/insights/taste");
   const plan = useData<Plan>("/api/insights/plan");
+  const training = useData<Training>("/api/insights/training");
   const [busy, setBusy] = useState("");
 
-  const refresh = async (what: "taste" | "plan") => {
+  const refresh = async (what: "taste" | "plan" | "training") => {
     setBusy(what);
     try {
       await api(`/api/insights/${what}?refresh=1`);
-      await (what === "taste" ? taste.reload() : plan.reload());
-      toast(what === "taste" ? "Taste profile rebuilt" : "New day built");
+      await (what === "taste" ? taste.reload() : what === "plan" ? plan.reload() : training.reload());
+      toast(what === "taste" ? "Taste profile rebuilt" : what === "plan" ? "New day built" : "Training read again");
     } catch (e) {
       toast(e instanceof Error ? e.message : "Couldn't refresh", { tone: "error" });
     } finally {
@@ -50,6 +58,7 @@ export function CoachView() {
 
   const t = taste.data;
   const p = plan.data;
+  const tr = training.data;
 
   return (
     <div className="animate-fade">
@@ -64,6 +73,45 @@ export function CoachView() {
           <span>{taste.error}</span>
         </div>
       )}
+
+      <section className="panel mb-5 overflow-hidden">
+        <header className="flex items-center gap-3 border-b border-line px-4 py-3">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-[15px] font-bold">Your training</h2>
+            <p className="text-[12px] text-muted">
+              {tr?.sessions ? `Read from your last ${tr.sessions} sessions and what your watch recorded` : "From your sessions and your watch"}
+            </p>
+          </div>
+          <button className="btn btn-quiet btn-sm" disabled={busy === "training"} onClick={() => refresh("training")}>
+            {busy === "training" ? "Reading…" : "Rebuild"}
+          </button>
+        </header>
+
+        {training.loading && !tr ? (
+          <div className="h-40 animate-pulse" />
+        ) : tr && !tr.ready ? (
+          <p className="px-4 py-4 text-[14px] text-muted">
+            Log a couple of sessions first — {tr.sessions ?? 0} of {tr.needed ?? 2} so far.
+          </p>
+        ) : tr?.payload ? (
+          <div className="px-4 py-3">
+            <p className="text-[14px] text-ink-2">{tr.payload.summary}</p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <div className="rounded-xl border border-line p-3">
+                <p className="field-label">Effort</p>
+                <p className="text-[13px] text-ink-2">{tr.payload.effort}</p>
+              </div>
+              <div className="rounded-xl border border-line p-3">
+                <p className="field-label">Recovery</p>
+                <p className="text-[13px] text-ink-2">{tr.payload.recovery}</p>
+              </div>
+            </div>
+            <Block title="What the numbers show" items={tr.payload.observations} icon="check" tone="text-train" />
+            <Block title="Worth changing next week" items={tr.payload.adjust} icon="alert" tone="text-fat" />
+            {tr.model && <p className="mt-3 text-[11px] text-muted">Read by {tr.model}</p>}
+          </div>
+        ) : null}
+      </section>
 
       <div className="grid gap-5 lg:grid-cols-2 lg:items-start">
         <section className="panel overflow-hidden">

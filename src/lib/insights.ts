@@ -1,8 +1,9 @@
 import "server-only";
 import { z } from "zod";
 import { askJSON } from "./ai";
+import { measuredBudget } from "./nutrition";
 import { all, get, run } from "./db";
-import { getGoals, getPlan } from "./queries";
+import { averageMeasuredTdee, getGoals, getPlan, getProfile, recentSessions, recoveryBaseline } from "./queries";
 
 type Cached<T> = { payload: T; model: string; created_at: string };
 
@@ -340,7 +341,17 @@ export async function dayPlan(force = false) {
   if (history.length < 5) return { ready: false as const, entries: history.length, needed: 5 };
 
   const goals = await getGoals();
-  const target = { calories: goals.calories, protein: goals.protein };
+  // Aim at measured expenditure when the watch has been reporting; fall back to the set goal.
+  const [measured, profile] = await Promise.all([averageMeasuredTdee(), getProfile()]);
+  const fromWatch = measured
+    ? measuredBudget(profile, { restingEnergy: measured.resting, activeEnergy: measured.active })
+    : null;
+  const target = {
+    calories: fromWatch?.calories ?? goals.calories,
+    protein: goals.protein,
+    source: fromWatch ? ("watch" as const) : ("goal" as const),
+    measuredDays: measured?.days ?? 0,
+  };
 
   if (!force) {
     const hit = await readCache<DayPlan>("dayplan", "me", 3);
@@ -348,7 +359,11 @@ export async function dayPlan(force = false) {
   }
 
   const lines = history.map((f) => `${f.name} (${f.times}x) — ${f.calories} kcal, ${f.protein}P ${f.carbs}C ${f.fat}F`).join("\n");
-  const brief = `Targets for the day: ${goals.calories} kcal, ${goals.protein} g protein, ${goals.carbs} g carbs, ${goals.fat} g fat.\nFoods they actually eat:\n\n${lines}`;
+  const basis =
+    target.source === "watch"
+      ? `Their watch measured an average burn of ${target.calories} kcal-worth of budget across ${target.measuredDays} recent days, so aim at that rather than the profile estimate.`
+      : "";
+  const brief = `Targets for the day: ${target.calories} kcal, ${target.protein} g protein, roughly ${goals.carbs} g carbs and ${goals.fat} g fat.${basis ? " " + basis : ""}\nFoods they actually eat:\n\n${lines}`;
 
   const ask = (user: string) =>
     askJSON({ system: PLAN_SYSTEM, user, schema: DayPlanSchema, maxTokens: 3200 });
@@ -367,7 +382,7 @@ export async function dayPlan(force = false) {
   }
 
   // One model pass for the food choices, then arithmetic we control for the portions.
-  const balanced = balancePortions(data, goals);
+  const balanced = balancePortions(data, target);
   const payload: DayPlan = balanced;
   await writeCache("dayplan", "me", payload, model);
   return {
@@ -377,4 +392,100 @@ export async function dayPlan(force = false) {
     target,
     created_at: new Date().toISOString(),
   };
+}
+
+// ---------------------------------------------------------------- training
+
+const TrainingSchema = z.object({
+  summary: z.string().catch(""),
+  effort: z.string().catch(""),
+  recovery: z.string().catch(""),
+  observations: list(4),
+  adjust: list(4),
+});
+export type TrainingInsight = z.infer<typeof TrainingSchema>;
+
+const TRAINING_SYSTEM = `You are a strength coach reading an athlete's training log alongside the numbers their Apple Watch recorded. Explain what the data actually says. Be specific and never generic.
+
+What the numbers mean:
+- Volume is kg lifted (weight x reps) and measures mechanical work. Calories and heart rate come from the watch and measure cardiovascular cost. They are different things: a heavy low-rep session can be high volume with a low average heart rate, and that is normal, not a problem.
+- Max heart rate near a hard ceiling with high calorie burn means genuine intensity. A high average heart rate across a long lifting session usually means short rests, not heavier weights.
+- HRV below someone's own baseline, resting heart rate above it, or short sleep all point to incomplete recovery. One bad night is noise; a run of them is a trend.
+
+Rules:
+- summary: two sentences on how their training has actually been going, citing real figures from the log.
+- effort: one or two sentences on intensity, using duration, heart rate and calories. Say plainly whether they are working hard, cruising, or inconsistent.
+- recovery: one or two sentences on recovery, using sleep, HRV and resting heart rate against their own baseline. If those are missing, say so rather than inventing a read.
+- observations: up to 4 concrete things the data shows. Reference actual numbers and dates. No platitudes.
+- adjust: up to 4 specific changes worth making next week. Each must be actionable and follow from the data above.
+- Never invent a number that is not in the data. If something is missing, name the gap instead.
+
+Respond with JSON only:
+{"summary":"...","effort":"...","recovery":"...","observations":["..."],"adjust":["..."]}`;
+
+function describeSession(s: {
+  date: string;
+  name: string;
+  duration_min: number | null;
+  calories: number | null;
+  avg_hr: number | null;
+  max_hr: number | null;
+  sets: number;
+  volume: number;
+  sleep_hours: number | null;
+  hrv: number | null;
+  resting_hr: number | null;
+}) {
+  const bits = [
+    `${s.date} — ${s.name}`,
+    `${s.sets} working sets`,
+    s.volume > 0 ? `${Math.round(s.volume)} kg volume` : null,
+    s.duration_min ? `${Math.round(s.duration_min)} min` : null,
+    s.calories ? `${Math.round(s.calories)} kcal burned` : null,
+    s.avg_hr ? `avg HR ${Math.round(s.avg_hr)}` : null,
+    s.max_hr ? `max HR ${Math.round(s.max_hr)}` : null,
+    s.sleep_hours ? `slept ${s.sleep_hours.toFixed(1)} h` : null,
+    s.hrv ? `HRV ${Math.round(s.hrv)}` : null,
+    s.resting_hr ? `resting HR ${Math.round(s.resting_hr)}` : null,
+  ].filter(Boolean);
+  return bits.join(" · ");
+}
+
+export async function trainingInsight(force = false) {
+  const [sessions, plan, profile] = await Promise.all([recentSessions(14), getPlan(), getProfile()]);
+  if (sessions.length < 2) {
+    return { ready: false as const, sessions: sessions.length, needed: 2 };
+  }
+
+  if (!force) {
+    const hit = await readCache<TrainingInsight>("training", "me", 2);
+    if (hit) return { ready: true as const, sessions: sessions.length, ...hit };
+  }
+
+  const baseline = await recoveryBaseline(sessions[0].date);
+  const withWatch = sessions.filter((s) => s.duration_min || s.avg_hr || s.calories).length;
+  const ageMax = 220 - profile.age;
+
+  const context = [
+    `Split: ${plan.days.join(" → ")}, six days a week, targeting ${plan.cardioPerWeek} cardio days.`,
+    `Age ${profile.age}, so an age-predicted max heart rate is about ${ageMax} bpm.`,
+    baseline.days > 0
+      ? `Their own 14-day baseline: resting HR ${baseline.restingHr ?? "unknown"}, HRV ${baseline.hrv ?? "unknown"}.`
+      : "No recovery baseline yet — the watch has not sent resting HR or HRV.",
+    withWatch === 0
+      ? "None of these sessions have watch data attached, so say that plainly and judge only volume and consistency."
+      : `${withWatch} of ${sessions.length} sessions have watch data.`,
+    "",
+    "Sessions, most recent first:",
+    ...sessions.map(describeSession),
+  ].join("\n");
+
+  const { data, model } = await askJSON({
+    system: TRAINING_SYSTEM,
+    user: context,
+    schema: TrainingSchema,
+    maxTokens: 1800,
+  });
+  await writeCache("training", "me", data, model);
+  return { ready: true as const, sessions: sessions.length, payload: data, model, created_at: new Date().toISOString() };
 }

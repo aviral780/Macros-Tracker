@@ -259,7 +259,9 @@ const ADDED_COLUMNS: [table: string, column: string, ddl: string][] = [
   ["workouts", "duration_min", "REAL"],
   ["workouts", "calories", "REAL"],
   ["workouts", "avg_hr", "REAL"],
+  ["workouts", "max_hr", "REAL"],
   ["workouts", "external_id", "TEXT"],
+  ["cardio", "max_hr", "REAL"],
 ];
 
 async function migrate(c: Client) {

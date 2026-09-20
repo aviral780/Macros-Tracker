@@ -74,6 +74,7 @@ export type Workout = {
   duration_min: number | null;
   calories: number | null;
   avg_hr: number | null;
+  max_hr: number | null;
   exercises: WorkoutExercise[];
 };
 
@@ -89,6 +90,7 @@ export type CardioEntry = {
   distance_km: number | null;
   calories: number | null;
   avg_hr: number | null;
+  max_hr: number | null;
   source: "manual" | "health";
 };
 

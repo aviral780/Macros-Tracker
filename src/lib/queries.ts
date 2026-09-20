@@ -102,7 +102,7 @@ export function getWorkoutHistory(limit = 30) {
   );
 }
 
-const CARDIO_COLUMNS = "id, date, kind, minutes, incline, speed, distance_km, calories, avg_hr, source";
+const CARDIO_COLUMNS = "id, date, kind, minutes, incline, speed, distance_km, calories, avg_hr, max_hr, source";
 
 export function getCardio(date: string) {
   return all<CardioEntry>(`SELECT ${CARDIO_COLUMNS} FROM cardio WHERE date = ? ORDER BY id`, [date]);
@@ -254,4 +254,68 @@ export async function recoveryBaseline(date: string) {
     hrv: median(rows.map((r) => r.hrv).filter((v): v is number => v !== null)),
     days: rows.length,
   };
+}
+
+export type SessionRecord = {
+  date: string;
+  name: string;
+  duration_min: number | null;
+  calories: number | null;
+  avg_hr: number | null;
+  max_hr: number | null;
+  sets: number;
+  volume: number;
+  exercises: number;
+  sleep_hours: number | null;
+  hrv: number | null;
+  resting_hr: number | null;
+  active_energy: number | null;
+};
+
+/**
+ * Recent sessions joined to the recovery numbers for the same day, which is the
+ * pairing that makes watch data explanatory rather than decorative: a short,
+ * low-output session after a bad night reads very differently to one after a good one.
+ */
+export function recentSessions(limit = 14) {
+  return all<SessionRecord>(
+    `SELECT w.date, w.name, w.duration_min, w.calories, w.avg_hr, w.max_hr,
+       COUNT(s.id) FILTER (WHERE s.warmup = 0) AS sets,
+       COALESCE(SUM(s.weight * s.reps) FILTER (WHERE s.warmup = 0), 0) AS volume,
+       COUNT(DISTINCT we.id) AS exercises,
+       d.sleep_hours, d.hrv, d.resting_hr, d.active_energy
+     FROM workouts w
+     LEFT JOIN workout_exercises we ON we.workout_id = w.id
+     LEFT JOIN sets s ON s.workout_exercise_id = we.id
+     LEFT JOIN daily_metrics d ON d.date = w.date
+     GROUP BY w.id
+     ORDER BY w.date DESC, w.id DESC
+     LIMIT ?`,
+    [limit],
+  );
+}
+
+/** Does the watch actually have anything to say yet? */
+export async function hasWatchData() {
+  const row = await get<{ n: number }>(
+    `SELECT (SELECT COUNT(*) FROM workouts WHERE duration_min IS NOT NULL OR avg_hr IS NOT NULL OR calories IS NOT NULL)
+          + (SELECT COUNT(*) FROM daily_metrics) AS n`,
+  );
+  return (row?.n ?? 0) > 0;
+}
+
+/**
+ * Average measured burn across recent days the watch reported. A general meal plan
+ * should aim at what this person actually expends, not a one-off day — and not the
+ * profile's activity multiplier, which already assumes training and would double-count.
+ */
+export async function averageMeasuredTdee(days = 14) {
+  const row = await get<{ n: number; resting: number | null; active: number | null }>(
+    `SELECT COUNT(*) AS n, AVG(resting_energy) AS resting, AVG(active_energy) AS active
+     FROM daily_metrics
+     WHERE active_energy IS NOT NULL AND date >= date('now', ?)`,
+    [`-${days} day`],
+  );
+  if (!row || row.n === 0 || row.active === null) return null;
+  return { days: row.n, resting: row.resting, active: row.active };
 }

@@ -17,6 +17,7 @@ const Body = z.object({
   durationMin: numOrNull(1440),
   calories: numOrNull(20000),
   avgHeartRate: numOrNull(250),
+  maxHeartRate: numOrNull(250),
   distanceKm: numOrNull(500),
   externalId: z.string().max(200).nullish(),
 });
@@ -39,13 +40,14 @@ export const POST = handle(async (req: Request) => {
   if (isCardio) {
     const plan = await getPlan();
     await run(
-      `INSERT INTO cardio (date, kind, minutes, distance_km, calories, avg_hr, source, external_id)
-       VALUES (?, ?, ?, ?, ?, ?, 'health', ?)
+      `INSERT INTO cardio (date, kind, minutes, distance_km, calories, avg_hr, max_hr, source, external_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'health', ?)
        ON CONFLICT(external_id) DO UPDATE SET
          minutes = excluded.minutes,
          distance_km = excluded.distance_km,
          calories = excluded.calories,
-         avg_hr = excluded.avg_hr`,
+         avg_hr = excluded.avg_hr,
+         max_hr = excluded.max_hr`,
       [
       date,
       b.type.trim() || plan.cardioKind,
@@ -53,6 +55,7 @@ export const POST = handle(async (req: Request) => {
       b.distanceKm,
       b.calories,
       b.avgHeartRate,
+      b.maxHeartRate,
       b.externalId || null,
       ],
     );
@@ -71,10 +74,11 @@ export const POST = handle(async (req: Request) => {
           b.externalId || null,
         ])
       ).lastInsertRowid;
-  await run("UPDATE workouts SET duration_min = ?, calories = ?, avg_hr = ? WHERE id = ?", [
+  await run("UPDATE workouts SET duration_min = ?, calories = ?, avg_hr = ?, max_hr = ? WHERE id = ?", [
     b.durationMin,
     b.calories,
     b.avgHeartRate,
+    b.maxHeartRate,
     id,
   ]);
   return json({ ok: true, kind: "strength", date, workoutId: id, created: !target }, 201);
