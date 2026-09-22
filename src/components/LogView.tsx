@@ -27,6 +27,7 @@ type Analysis = {
   notes: string;
   model: string;
   photoId: string | null;
+  photoWarning: string | null;
   items: { name: string; portion: string; grams: number; calories: number; protein_g: number; carbs_g: number; fat_g: number; fiber_g: number; confidence: number }[];
 };
 
@@ -106,6 +107,7 @@ export function LogView() {
           : { text: description };
       const r = await api<Analysis>("/api/analyze", { method: "POST", body });
       if (r.photoId) setPhotoId(r.photoId);
+      if (r.photoWarning) toast(r.photoWarning, { tone: "error" });
       setResult({ title: r.title, notes: r.notes, model: r.model });
       setSource(kind);
       setItems(

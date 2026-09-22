@@ -19,6 +19,8 @@ export const POST = handle(async (req: Request) => {
 
   let photoId: string | null = null;
   let image = body.image;
+  let pendingPhoto: { id: string; ext: string; bytes: Buffer } | null = null;
+
   if (!image && body.photoId) {
     const row = await get<{ filename: string }>("SELECT filename FROM photos WHERE id = ?", [body.photoId]);
     if (!row) return fail("That photo is no longer available. Add it again.", 404);
@@ -29,13 +31,26 @@ export const POST = handle(async (req: Request) => {
   } else if (body.image) {
     const m = body.image.match(/^data:image\/(jpeg|png|webp);base64,(.+)$/);
     if (!m) return fail("Use a JPEG, PNG or WebP photo");
-    const buf = Buffer.from(m[2], "base64");
-    if (buf.length > 8 * 1024 * 1024) return fail("Photo is larger than 8 MB");
-    photoId = randomUUID();
-    const ref = await savePhoto(photoId, m[1] === "jpeg" ? "jpg" : m[1], buf);
-    await run("INSERT INTO photos (id, filename) VALUES (?, ?)", [photoId, ref]);
+    const bytes = Buffer.from(m[2], "base64");
+    if (bytes.length > 8 * 1024 * 1024) return fail("Photo is larger than 8 MB");
+    pendingPhoto = { id: randomUUID(), ext: m[1] === "jpeg" ? "jpg" : m[1], bytes };
   }
 
+  // Read the food first. The model already has the image in hand, so keeping the picture
+  // is a nice-to-have — losing the whole analysis because storage is misconfigured is not.
   const analysis = await analyzeFood({ imageDataUrl: image, text });
-  return json({ ...analysis, photoId });
+
+  let photoWarning: string | null = null;
+  if (pendingPhoto) {
+    try {
+      const ref = await savePhoto(pendingPhoto.id, pendingPhoto.ext, pendingPhoto.bytes);
+      await run("INSERT INTO photos (id, filename) VALUES (?, ?)", [pendingPhoto.id, ref]);
+      photoId = pendingPhoto.id;
+    } catch (e) {
+      console.error("Couldn't keep the photo:", e);
+      photoWarning = "Your food was analysed, but the photo couldn't be saved.";
+    }
+  }
+
+  return json({ ...analysis, photoId, photoWarning });
 });

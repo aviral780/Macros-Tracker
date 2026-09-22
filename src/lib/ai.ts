@@ -119,7 +119,10 @@ async function describeFailure(res: Response, cfg: AIConfig, model: string, body
   if (res.status === 401 || res.status === 403 || /api[ _-]?key/i.test(detail))
     return new AIError(`${who} rejected the API key. Check it in Settings.`, 401);
   if (res.status === 404)
-    return new AIError(`${who} doesn't have the model "${model}". Open Settings and choose Detect models.`, 404);
+    return new AIError(
+      `${who} no longer offers the model "${model}". Open Settings and choose Detect models.`,
+      404,
+    );
   if (res.status === 429) {
     const daily = /per day|daily|free_tier|quota/i.test(detail);
     return new AIError(
@@ -131,7 +134,11 @@ async function describeFailure(res: Response, cfg: AIConfig, model: string, body
     );
   }
   if (OVERLOADED.has(res.status) || /overload|is busy|unavailable|capacity|try again/i.test(detail))
-    return new AIError(`${who} is overloaded right now.`, 503, true);
+    return new AIError(
+      `${who} is busy right now — this is their end, not yours. Wait a minute and retry, log it by hand on the Manual tab, or switch provider in Settings.`,
+      503,
+      true,
+    );
   return new AIError(`${who} returned an error (${res.status}): ${detail}`);
 }
 
@@ -389,8 +396,15 @@ export async function analyzeFood(input: AnalysisInput): Promise<Analysis & { mo
   const content: Content[] = [{ type: "text", text: userText }];
   if (input.imageDataUrl) content.push({ type: "image_url", image_url: { url: input.imageDataUrl } });
 
-  const { data, model } = await withFallback(cfg, (m) =>
-    requestJSON(cfg, m, SYSTEM_PROMPT, content, AnalysisSchema, 2048),
+  // A typed description needs no vision, so it runs on the insight model: a bigger free
+  // allowance and far less contention than the photo model, which is the one that gets
+  // rate-limited and overloaded.
+  const textOnly = !input.imageDataUrl;
+  const { data, model } = await withFallback(
+    cfg,
+    (m) => requestJSON(cfg, m, SYSTEM_PROMPT, content, AnalysisSchema, 2048),
+    textOnly ? await resolveInsightModel(cfg) : undefined,
+    textOnly,
   );
   return { ...data, model };
 }

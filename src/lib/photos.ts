@@ -30,8 +30,16 @@ export async function savePhoto(id: string, ext: string, body: Buffer): Promise<
     });
     return saved.url;
   }
-  fs.mkdirSync(PHOTO_DIR, { recursive: true });
-  fs.writeFileSync(photoPath(name), body);
+  try {
+    fs.mkdirSync(PHOTO_DIR, { recursive: true });
+    fs.writeFileSync(photoPath(name), body);
+  } catch (e) {
+    // Serverless hosts have no writable disk, so the raw ENOENT means nothing to anyone.
+    throw new Error(
+      "Photo storage isn't set up. Add Blob storage to the project and redeploy so BLOB_READ_WRITE_TOKEN is available.",
+      { cause: e },
+    );
+  }
   return name;
 }
 
